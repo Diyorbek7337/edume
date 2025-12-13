@@ -1,0 +1,83 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    
+    function isAdminOrDirector() {
+      return isAuthenticated() && (getUserRole() == 'director' || getUserRole() == 'admin');
+    }
+    
+    function isDirector() {
+      return isAuthenticated() && getUserRole() == 'director';
+    }
+    
+    function isTeacher() {
+      return isAuthenticated() && getUserRole() == 'teacher';
+    }
+    
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdminOrDirector();
+      allow update: if isAdminOrDirector() || request.auth.uid == userId;
+      allow delete: if isDirector();
+    }
+    
+    match /students/{docId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdminOrDirector();
+    }
+    
+    match /teachers/{docId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdminOrDirector();
+    }
+    
+    match /groups/{docId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdminOrDirector();
+    }
+    
+    match /leads/{docId} {
+      allow read, write: if isAdminOrDirector();
+    }
+    
+    match /payments/{docId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdminOrDirector();
+    }
+    
+    match /attendance/{docId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdminOrDirector() || isTeacher();
+    }
+    
+    match /grades/{docId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdminOrDirector() || isTeacher();
+    }
+    
+    match /messages/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdminOrDirector();
+    }
+    
+    match /feedback/{docId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAdminOrDirector();
+    }
+    
+    match /settings/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdminOrDirector();
+    }
+  }
+}
