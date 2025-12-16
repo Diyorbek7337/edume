@@ -30,7 +30,8 @@ const Messages = () => {
     recipientType: '', 
     recipientIds: [], 
     subject: '', 
-    content: '' 
+    content: '',
+    requiresReply: false
   });
   const [replyContent, setReplyContent] = useState('');
   const [formLoading, setFormLoading] = useState(false);
@@ -169,7 +170,7 @@ const Messages = () => {
   };
 
   const resetForm = () => {
-    setFormData({ type: 'message', recipientType: '', recipientIds: [], subject: '', content: '' });
+    setFormData({ type: 'message', recipientType: '', recipientIds: [], subject: '', content: '', requiresReply: false });
     setReplyContent('');
   };
 
@@ -196,7 +197,8 @@ const Messages = () => {
           recipientIds: recipientIds,
           subject: formData.subject,
           content: formData.content,
-          read: false
+          read: false,
+          requiresReply: formData.requiresReply
         };
         
         await messagesAPI.create(messageData);
@@ -377,25 +379,46 @@ const Messages = () => {
                 className={`p-4 flex items-start gap-4 cursor-pointer hover:bg-gray-50 transition ${!msg.read ? 'bg-primary-50/50' : ''}`}
               >
                 <Avatar name={msg.senderName} />
-                <div className="flex-1 min-w-0" onClick={() => { setSelectedMessage(msg); }}>
+                <div className="flex-1 min-w-0" onClick={() => setSelectedMessage(msg)}>
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <span className="font-semibold">{msg.senderName}</span>
                     <Badge variant="default">{msg.senderRole}</Badge>
                     {!msg.read && <Badge variant="primary">Yangi</Badge>}
+                    {msg.requiresReply && <Badge variant="warning">Javob kutilmoqda</Badge>}
                   </div>
                   <p className="font-medium text-gray-800">{msg.subject}</p>
                   <p className="text-sm text-gray-500 truncate">{msg.content}</p>
                   <p className="text-xs text-gray-400 mt-1">{formatDate(msg.createdAt)}</p>
                 </div>
-                {(isAdmin || isTeacher) && (
-                  <Button size="sm" variant="ghost" icon={Reply} onClick={(e) => { 
-                    e.stopPropagation(); 
-                    setSelectedMessage(msg); 
-                    setShowReplyModal(true); 
-                  }}>
-                    Javob
-                  </Button>
-                )}
+                <div className="flex flex-col gap-2">
+                  {!msg.read && (
+                    <Button 
+                      size="sm" 
+                      variant="outline" 
+                      onClick={async (e) => { 
+                        e.stopPropagation();
+                        try {
+                          await messagesAPI.update(msg.id, { read: true });
+                          setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, read: true } : m));
+                          toast.success("O'qildi deb belgilandi");
+                        } catch (err) {
+                          console.error('Mark as read error:', err);
+                        }
+                      }}
+                    >
+                      O'qildi
+                    </Button>
+                  )}
+                  {(isAdmin || isTeacher) && (
+                    <Button size="sm" variant="ghost" icon={Reply} onClick={(e) => { 
+                      e.stopPropagation(); 
+                      setSelectedMessage(msg); 
+                      setShowReplyModal(true); 
+                    }}>
+                      Javob
+                    </Button>
+                  )}
+                </div>
               </div>
             )) : (
               <div className="p-12">
@@ -614,6 +637,21 @@ const Messages = () => {
             rows={5}
             required
           />
+          
+          {/* Javob talab qilinadi checkbox */}
+          <label className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100">
+            <input
+              type="checkbox"
+              checked={formData.requiresReply}
+              onChange={(e) => setFormData({ ...formData, requiresReply: e.target.checked })}
+              className="w-5 h-5 rounded border-gray-300 text-primary-600"
+            />
+            <div>
+              <p className="font-medium">Javob talab qilinadi</p>
+              <p className="text-xs text-gray-500">Bu xabarga javob kutilayotganini belgilash</p>
+            </div>
+          </label>
+          
           <div className="flex justify-end gap-2 pt-4 border-t">
             <Button type="button" variant="ghost" onClick={() => setShowComposeModal(false)}>Bekor qilish</Button>
             <Button type="submit" loading={formLoading} icon={Send}>Yuborish</Button>

@@ -287,6 +287,17 @@ export const attendanceAPI = {
     }
   },
 
+  getByGroup: async (groupId) => {
+    try {
+      const q = query(collection(db, 'attendance'), where('groupId', '==', groupId));
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err) {
+      console.error('attendance getByGroup error:', err);
+      return [];
+    }
+  },
+
   getByStudent: async (studentId) => {
     const q = query(collection(db, 'attendance'), where('studentId', '==', studentId));
     const snapshot = await getDocs(q);
@@ -359,6 +370,11 @@ export const messagesAPI = {
     return { id: docRef.id, ...data };
   },
 
+  update: async (id, data) => {
+    await updateDoc(doc(db, 'messages', id), { ...data, updatedAt: serverTimestamp() });
+    return { id, ...data };
+  },
+
   markAsRead: async (id) => {
     await updateDoc(doc(db, 'messages', id), { read: true });
   },
@@ -410,5 +426,103 @@ export const settingsAPI = {
 
   update: async (data) => {
     await setDoc(doc(db, 'settings', 'general'), { ...data, updatedAt: serverTimestamp() }, { merge: true });
+  },
+};
+
+// ==================== TEACHER RATINGS ====================
+export const teacherRatingsAPI = {
+  getAll: async () => {
+    try {
+      const snapshot = await getDocs(collection(db, 'teacher_ratings'));
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err) {
+      console.error('teacher_ratings error:', err);
+      return [];
+    }
+  },
+
+  getByTeacher: async (teacherId) => {
+    try {
+      const q = query(collection(db, 'teacher_ratings'), where('teacherId', '==', teacherId));
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err) {
+      console.error('teacher_ratings error:', err);
+      return [];
+    }
+  },
+
+  create: async (data) => {
+    const docRef = await addDoc(collection(db, 'teacher_ratings'), { 
+      ...data, 
+      createdAt: serverTimestamp() 
+    });
+    return { id: docRef.id, ...data };
+  },
+
+  // O'quvchi/ota-ona allaqachon baholaganmi tekshirish
+  checkExisting: async (teacherId, odamId) => {
+    try {
+      const q = query(
+        collection(db, 'teacher_ratings'), 
+        where('teacherId', '==', teacherId),
+        where('odamId', '==', odamId)
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.docs.length > 0;
+    } catch (err) {
+      return false;
+    }
+  },
+};
+
+// ==================== SCHEDULE ====================
+export const scheduleAPI = {
+  getAll: async () => {
+    try {
+      const snapshot = await getDocs(collection(db, 'schedule'));
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err) {
+      console.error('schedule error:', err);
+      return [];
+    }
+  },
+
+  getByGroup: async (groupId) => {
+    try {
+      const q = query(collection(db, 'schedule'), where('groupId', '==', groupId));
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err) {
+      return [];
+    }
+  },
+
+  getByTeacher: async (teacherId) => {
+    try {
+      const q = query(collection(db, 'schedule'), where('teacherId', '==', teacherId));
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err) {
+      return [];
+    }
+  },
+
+  create: async (data) => {
+    const docRef = await addDoc(collection(db, 'schedule'), { 
+      ...data, 
+      createdAt: serverTimestamp() 
+    });
+    return { id: docRef.id, ...data };
+  },
+
+  update: async (id, data) => {
+    await updateDoc(doc(db, 'schedule', id), { ...data, updatedAt: serverTimestamp() });
+    return { id, ...data };
+  },
+
+  delete: async (id) => {
+    await deleteDoc(doc(db, 'schedule', id));
+    return true;
   },
 };

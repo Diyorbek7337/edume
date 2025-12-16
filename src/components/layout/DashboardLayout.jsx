@@ -3,7 +3,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { 
   LayoutDashboard, Users, GraduationCap, UsersRound, UserPlus, CreditCard, 
   CalendarCheck, MessageSquare, BarChart3, Settings, LogOut, Menu, X,
-  Bell, Search, ChevronDown, FileText, Send, Shield
+  Bell, Search, ChevronDown, FileText, Send, Shield, Calendar, Star
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { ROLES, ROLE_NAMES } from '../../utils/constants';
@@ -26,10 +26,12 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
         { id: 'students', label: "O'quvchilar", icon: Users, path: '/students' },
         { id: 'teachers', label: "O'qituvchilar", icon: GraduationCap, path: '/teachers' },
         { id: 'groups', label: 'Guruhlar', icon: UsersRound, path: '/groups' },
+        { id: 'schedule', label: 'Dars jadvali', icon: Calendar, path: '/schedule' },
         { id: 'leads', label: 'Lidlar', icon: UserPlus, path: '/leads' },
         { id: 'payments', label: "To'lovlar", icon: CreditCard, path: '/payments' },
         { id: 'attendance', label: 'Davomat', icon: CalendarCheck, path: '/attendance' },
         { id: 'grades', label: 'Baholar', icon: FileText, path: '/grades' },
+        { id: 'teacher-ratings', label: "O'qituvchi baholari", icon: Star, path: '/teacher-ratings' },
         { id: 'messages', label: 'Xabarlar', icon: MessageSquare, path: '/messages', badge: unreadCount },
         { id: 'reports', label: 'Hisobotlar', icon: BarChart3, path: '/reports' },
       );
@@ -41,10 +43,12 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
         { id: 'students', label: "O'quvchilar", icon: Users, path: '/students' },
         { id: 'teachers', label: "O'qituvchilar", icon: GraduationCap, path: '/teachers' },
         { id: 'groups', label: 'Guruhlar', icon: UsersRound, path: '/groups' },
+        { id: 'schedule', label: 'Dars jadvali', icon: Calendar, path: '/schedule' },
         { id: 'leads', label: 'Lidlar', icon: UserPlus, path: '/leads' },
         { id: 'payments', label: "To'lovlar", icon: CreditCard, path: '/payments' },
         { id: 'attendance', label: 'Davomat', icon: CalendarCheck, path: '/attendance' },
         { id: 'grades', label: 'Baholar', icon: FileText, path: '/grades' },
+        { id: 'teacher-ratings', label: "O'qituvchi baholari", icon: Star, path: '/teacher-ratings' },
         { id: 'messages', label: 'Xabarlar', icon: MessageSquare, path: '/messages', badge: unreadCount },
         { id: 'reports', label: 'Hisobotlar', icon: BarChart3, path: '/reports' },
       );
@@ -54,6 +58,7 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
     if (role === ROLES.TEACHER) {
       items.push(
         { id: 'groups', label: 'Guruhlar', icon: UsersRound, path: '/groups' },
+        { id: 'schedule', label: 'Dars jadvali', icon: Calendar, path: '/schedule' },
         { id: 'attendance', label: 'Davomat', icon: CalendarCheck, path: '/attendance' },
         { id: 'grades', label: 'Baholar', icon: FileText, path: '/grades' },
         { id: 'payments', label: "To'lovlar", icon: CreditCard, path: '/payments' },
@@ -66,7 +71,9 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
       items.push(
         { id: 'grades', label: 'Baholarim', icon: FileText, path: '/grades' },
         { id: 'attendance', label: 'Davomatim', icon: CalendarCheck, path: '/attendance' },
+        { id: 'schedule', label: 'Dars jadvali', icon: Calendar, path: '/schedule' },
         { id: 'payments', label: "To'lovlarim", icon: CreditCard, path: '/payments' },
+        { id: 'teacher-ratings', label: "O'qituvchini baholash", icon: Star, path: '/teacher-ratings' },
         { id: 'messages', label: 'Xabarlar', icon: MessageSquare, path: '/messages', badge: unreadCount },
       );
     }

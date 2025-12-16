@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Search, Plus, Edit, Trash2, Eye, Download, Copy, Check } from 'lucide-react';
+import { Search, Plus, Edit, Trash2, Eye, Download, Copy, Check, Gift } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Avatar, Table, Modal, Loading, EmptyState } from '../components/common';
-import { studentsAPI, groupsAPI, usersAPI } from '../services/api';
+import { studentsAPI, groupsAPI, usersAPI, settingsAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
-import { formatPhone } from '../utils/helpers';
+import { formatPhone, formatMoney } from '../utils/helpers';
 import { toast } from 'react-toastify';
 
 const Students = () => {
@@ -63,7 +63,21 @@ const Students = () => {
   });
 
   const resetForm = () => { 
-    setFormData({ fullName: '', phone: '', email: '', groupId: '', parentName: '', parentPhone: '', parentTelegram: '', address: '' }); 
+    setFormData({ 
+      fullName: '', 
+      phone: '', 
+      email: '', 
+      groupId: '', 
+      parentName: '', 
+      parentPhone: '', 
+      parentTelegram: '', 
+      address: '',
+      startDate: new Date().toISOString().split('T')[0],
+      paymentDay: '1',
+      paymentType: 'full_month',
+      referredBy: '', // Tavsiya qilgan o'quvchi ID
+      discount: '0' // Chegirma foizi
+    }); 
     setFormError(''); 
   };
 
@@ -105,25 +119,90 @@ const Students = () => {
         email: studentEmail,
         groupName: group?.name || '', 
         status: 'active',
-        mustChangePassword: true
+        mustChangePassword: true,
+        startDate: formData.startDate,
+        paymentDay: parseInt(formData.paymentDay) || 1,
+        paymentType: formData.paymentType || 'full_month',
+        referredBy: formData.referredBy || null,
+        discount: parseInt(formData.discount) || 0
       });
       
-      // 3. Ota-ona akkaunti yaratish
+      // 2.5 Tavsiya mukofoti - agar tavsiya qilgan o'quvchi bo'lsa
+      if (formData.referredBy) {
+        try {
+          const settingsData = await settingsAPI.get();
+          const referralBonus = parseInt(settingsData?.referralBonus) || 10; // Default 10%
+          const monthlyFee = parseInt(settingsData?.monthlyFee) || 500000;
+          const bonusAmount = Math.round(monthlyFee * referralBonus / 100);
+          
+          // Tavsiya qilgan o'quvchiga mukofot yozish
+          const referrer = students.find(s => s.id === formData.referredBy);
+          if (referrer) {
+            const currentBonus = parseInt(referrer.referralBonus) || 0;
+            await studentsAPI.update(formData.referredBy, { 
+              referralBonus: currentBonus + bonusAmount,
+              referralCount: (referrer.referralCount || 0) + 1
+            });
+          }
+        } catch (err) {
+          console.error('Referral bonus error:', err);
+        }
+      }
+      
+      // 3. Ota-ona akkaunti yaratish yoki yangilash
       let parentEmail = '';
       let parentPassword = 'parent123';
       
       if (formData.parentPhone) {
         parentEmail = `${formData.parentPhone.replace(/\D/g, '')}@parent.edu`;
         try {
-          await usersAPI.create({
-            fullName: formData.parentName || `${formData.fullName} (ota-ona)`,
-            email: parentEmail,
-            phone: formData.parentPhone,
-            telegram: formData.parentTelegram,
-            role: ROLES.PARENT,
-            childName: formData.fullName,
-            childId: newStudent.id
-          }, parentPassword);
+          // Avval mavjud ota-onani tekshirish
+          const existingUsers = await usersAPI.getAll();
+          const existingParent = existingUsers.find(u => 
+            u.email === parentEmail || 
+            u.phone === formData.parentPhone ||
+            u.phone?.replace(/\D/g, '') === formData.parentPhone.replace(/\D/g, '')
+          );
+          
+          if (existingParent) {
+            // Mavjud ota-onaga yangi farzand qo'shish
+            const childIds = existingParent.childIds || [];
+            if (existingParent.childId && !childIds.includes(existingParent.childId)) {
+              childIds.push(existingParent.childId);
+            }
+            if (!childIds.includes(newStudent.id)) {
+              childIds.push(newStudent.id);
+            }
+            
+            const childNames = existingParent.childNames || [];
+            if (existingParent.childName && !childNames.includes(existingParent.childName)) {
+              childNames.push(existingParent.childName);
+            }
+            if (!childNames.includes(formData.fullName)) {
+              childNames.push(formData.fullName);
+            }
+            
+            await usersAPI.update(existingParent.id, { 
+              childIds, 
+              childNames,
+              childId: childIds[0], // Eski format uchun
+              childName: childNames[0]
+            });
+            parentEmail = existingParent.email;
+          } else {
+            // Yangi ota-ona yaratish
+            await usersAPI.create({
+              fullName: formData.parentName || `${formData.fullName} (ota-ona)`,
+              email: parentEmail,
+              phone: formData.parentPhone,
+              telegram: formData.parentTelegram,
+              role: ROLES.PARENT,
+              childName: formData.fullName,
+              childId: newStudent.id,
+              childIds: [newStudent.id],
+              childNames: [formData.fullName]
+            }, parentPassword);
+          }
         } catch (err) {
           if (err.code !== 'auth/email-already-in-use') {
             console.error('Parent creation error:', err);
@@ -360,6 +439,71 @@ const Students = () => {
             <Select label="Guruh" value={formData.groupId} onChange={(e) => setFormData({ ...formData, groupId: e.target.value })} options={groups.map(g => ({ value: g.id, label: g.name }))} />
             <Input label="Manzil" value={formData.address} onChange={(e) => setFormData({ ...formData, address: e.target.value })} />
           </div>
+          
+          <h4 className="font-medium pt-2 border-t">O'qish va to'lov sozlamalari</h4>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <Input 
+              label="O'qishni boshlash sanasi *" 
+              type="date" 
+              value={formData.startDate} 
+              onChange={(e) => setFormData({ ...formData, startDate: e.target.value })} 
+              required 
+            />
+            <Select 
+              label="To'lov turi" 
+              value={formData.paymentType} 
+              onChange={(e) => setFormData({ ...formData, paymentType: e.target.value })} 
+              options={[
+                { value: 'full_month', label: 'To\'liq oylik (1-sanadan)' },
+                { value: 'prorated', label: 'Proporsional (boshlash sanasidan)' }
+              ]} 
+            />
+            <Input 
+              label="To'lov kuni (oyning)" 
+              type="number" 
+              min="1" 
+              max="28" 
+              value={formData.paymentDay} 
+              onChange={(e) => setFormData({ ...formData, paymentDay: e.target.value })} 
+              placeholder="1"
+            />
+          </div>
+          <p className="text-xs text-gray-500">
+            * Proporsional: Agar o'quvchi oyning o'rtasida boshlasa, birinchi oylik proporsional hisoblanadi
+          </p>
+          
+          <h4 className="font-medium pt-2 border-t flex items-center gap-2">
+            <Gift className="w-4 h-4 text-purple-600" />
+            Tavsiya va chegirma
+          </h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Select 
+              label="Tavsiya qilgan o'quvchi" 
+              value={formData.referredBy} 
+              onChange={(e) => setFormData({ ...formData, referredBy: e.target.value })}
+              options={[
+                { value: '', label: 'Tanlanmagan' },
+                ...students.filter(s => s.status === 'active').map(s => ({ 
+                  value: s.id, 
+                  label: `${s.fullName} (${s.groupName || 'Guruhsiz'})` 
+                }))
+              ]}
+            />
+            <Input 
+              label="Chegirma (%)" 
+              type="number" 
+              min="0" 
+              max="100" 
+              value={formData.discount} 
+              onChange={(e) => setFormData({ ...formData, discount: e.target.value })} 
+              placeholder="0"
+            />
+          </div>
+          {formData.referredBy && (
+            <div className="p-3 bg-purple-50 rounded-lg text-sm text-purple-700">
+              <p>✨ Tavsiya qilgan o'quvchi mukofot oladi (sozlamalarda belgilangan foiz miqdorida)</p>
+            </div>
+          )}
           
           <h4 className="font-medium pt-2 border-t">Ota-ona ma'lumotlari</h4>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

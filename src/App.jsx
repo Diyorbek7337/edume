@@ -6,7 +6,7 @@ import Login from './components/auth/Login';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 
 // Layout
-import { DashboardLayout } from './components/layout/DashboardLayout';
+import  DashboardLayout  from './components/layout/DashboardLayout';
 
 // Pages
 import Dashboard from './pages/Dashboard';
@@ -22,6 +22,8 @@ import Messages from './pages/Messages';
 import Settings from './pages/Settings';
 import Profile from './pages/Profile';
 import Reports from './pages/Reports';
+import Schedule from './pages/Schedule';
+import TeacherRatings from './pages/TeacherRatings';
 
 function App() {
   return (
@@ -51,6 +53,8 @@ function App() {
             <Route path="messages" element={<Messages />} />
             <Route path="reports" element={<Reports />} />
             <Route path="profile" element={<Profile />} />
+            <Route path="schedule" element={<Schedule />} />
+            <Route path="teacher-ratings" element={<TeacherRatings />} />
             
             {/* Teacher routes */}
             <Route path="my-groups" element={<Groups />} />

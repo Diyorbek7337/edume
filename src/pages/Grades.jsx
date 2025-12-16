@@ -18,10 +18,20 @@ const Grades = () => {
   const [formData, setFormData] = useState({ studentId: '', topic: '', grade: '', maxGrade: '100', note: '', date: new Date().toISOString().split('T')[0] });
   const [formLoading, setFormLoading] = useState(false);
   const [studentData, setStudentData] = useState(null);
+  const [filterDate, setFilterDate] = useState(''); // Sana bo'yicha filter
 
   const isTeacher = role === ROLES.TEACHER;
+  const isAdmin = role === ROLES.ADMIN || role === ROLES.DIRECTOR;
   const isStudentOrParent = role === ROLES.STUDENT || role === ROLES.PARENT;
-  const canEdit = isTeacher; // Faqat o'qituvchi baho qo'yadi
+  const canEdit = isTeacher || isAdmin;
+  
+  // Baho qo'yilgan kundan boshqa kunda o'chirib bo'lmaydi
+  const canDeleteGrade = (grade) => {
+    if (isAdmin) return true; // Admin har doim o'chira oladi
+    const gradeDate = grade.date || formatDate(grade.createdAt);
+    const today = new Date().toISOString().split('T')[0];
+    return gradeDate === today; // Faqat bugun qo'yilgan bahoni o'chirish mumkin
+  };
 
   useEffect(() => { fetchGroups(); }, []);
   useEffect(() => { if (selectedGroup) fetchGradesAndStudents(); }, [selectedGroup]);
@@ -33,23 +43,33 @@ const Grades = () => {
       if (isTeacher) {
         // O'qituvchini teachers kolleksiyasidan topish
         const allTeachers = await teachersAPI.getAll();
+        const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
+        
         const teacher = allTeachers.find(t => 
           t.id === userData?.id || 
-          t.email === userData?.email
+          t.email === userData?.email ||
+          t.phone === userData?.phone ||
+          normalizePhone(t.phone) === normalizePhone(userData?.phone)
         );
         
-        // Guruhlarni topish (ham teachers ID, ham users ID bilan)
-        if (teacher) {
-          const groups1 = await groupsAPI.getByTeacher(teacher.id);
-          groupsData = [...groups1];
-        }
-        const groups2 = await groupsAPI.getByTeacher(userData?.id);
+        console.log('Grades - Found teacher:', teacher);
         
-        // Birlashtirish (dublikatlarni olib tashlash)
-        const allGroups = [...groupsData, ...groups2];
-        groupsData = allGroups.filter((g, index, self) => 
+        // Guruhlarni topish - barcha guruhlardan filter
+        const allGroups = await groupsAPI.getAll();
+        
+        if (teacher) {
+          groupsData = allGroups.filter(g => g.teacherId === teacher.id);
+        }
+        
+        // Users ID bilan ham
+        const groups2 = allGroups.filter(g => g.teacherId === userData?.id);
+        
+        // Birlashtirish
+        groupsData = [...groupsData, ...groups2].filter((g, index, self) => 
           index === self.findIndex(t => t.id === g.id)
         );
+        
+        console.log('Grades - Teacher groups:', groupsData);
       } else if (isStudentOrParent) {
         // O'quvchi/Ota-ona faqat o'z guruhini ko'radi
         const allStudents = await studentsAPI.getAll();
@@ -177,6 +197,11 @@ const Grades = () => {
   }
 
   const studentStats = getStudentStats();
+  
+  // Sana bo'yicha filter
+  const filteredGrades = filterDate 
+    ? grades.filter(g => (g.date || formatDate(g.createdAt)) === filterDate)
+    : grades;
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -191,13 +216,21 @@ const Grades = () => {
       </div>
 
       <Card padding="p-4">
-        <Select 
-          label="Guruh" 
-          value={selectedGroup} 
-          onChange={(e) => setSelectedGroup(e.target.value)} 
-          options={groups.map(g => ({ value: g.id, label: g.name }))} 
-          placeholder="Guruhni tanlang" 
-        />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Select 
+            label="Guruh" 
+            value={selectedGroup} 
+            onChange={(e) => setSelectedGroup(e.target.value)} 
+            options={groups.map(g => ({ value: g.id, label: g.name }))} 
+            placeholder="Guruhni tanlang" 
+          />
+          <Input 
+            label="Sana bo'yicha filter" 
+            type="date" 
+            value={filterDate} 
+            onChange={(e) => setFilterDate(e.target.value)} 
+          />
+        </div>
       </Card>
 
       {selectedGroup && (
@@ -205,10 +238,18 @@ const Grades = () => {
           {/* Baholar ro'yxati */}
           <div className="lg:col-span-2">
             <Card padding="p-0">
-              <div className="p-4 border-b">
+              <div className="p-4 border-b flex items-center justify-between">
                 <h3 className="font-semibold">Baholar tarixi</h3>
+                {filterDate && (
+                  <button 
+                    onClick={() => setFilterDate('')} 
+                    className="text-sm text-primary-600 hover:underline"
+                  >
+                    Filterni tozalash
+                  </button>
+                )}
               </div>
-              {grades.length > 0 ? (
+              {filteredGrades.length > 0 ? (
                 <Table>
                   <Table.Head>
                     <Table.Row>
@@ -220,7 +261,7 @@ const Grades = () => {
                     </Table.Row>
                   </Table.Head>
                   <Table.Body>
-                    {grades.map(grade => (
+                    {filteredGrades.map(grade => (
                       <Table.Row key={grade.id}>
                         <Table.Cell>
                           <div className="flex items-center gap-3">
@@ -234,15 +275,20 @@ const Grades = () => {
                             {grade.grade}/{grade.maxGrade}
                           </span>
                         </Table.Cell>
-                        <Table.Cell>{formatDate(grade.createdAt)}</Table.Cell>
+                        <Table.Cell>{grade.date || formatDate(grade.createdAt)}</Table.Cell>
                         {canEdit && (
                           <Table.Cell>
-                            <button 
-                              onClick={() => handleDelete(grade.id)}
-                              className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            {canDeleteGrade(grade) ? (
+                              <button 
+                                onClick={() => handleDelete(grade.id)}
+                                className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                                title="O'chirish"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            ) : (
+                              <span className="text-xs text-gray-400" title="O'chirib bo'lmaydi">🔒</span>
+                            )}
                           </Table.Cell>
                         )}
                       </Table.Row>
@@ -251,7 +297,7 @@ const Grades = () => {
                 </Table>
               ) : (
                 <div className="p-8">
-                  <EmptyState icon={FileText} title="Baholar yo'q" description="Bu guruhda hali baholar qo'yilmagan" />
+                  <EmptyState icon={FileText} title="Baholar yo'q" description={filterDate ? "Bu sanada baholar yo'q" : "Bu guruhda hali baholar qo'yilmagan"} />
                 </div>
               )}
             </Card>

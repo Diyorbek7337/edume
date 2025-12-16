@@ -17,10 +17,12 @@ const Attendance = () => {
   const [attendance, setAttendance] = useState({});
   const [saving, setSaving] = useState(false);
   const [studentData, setStudentData] = useState(null);
+  const [isLocked, setIsLocked] = useState(false); // Davomat qulflangan
 
   const isTeacher = role === ROLES.TEACHER;
   const isStudentOrParent = role === ROLES.STUDENT || role === ROLES.PARENT;
-  const canEdit = isTeacher;
+  const isAdmin = role === ROLES.ADMIN || role === ROLES.DIRECTOR;
+  const canEdit = (isTeacher || isAdmin) && !isLocked;
 
   useEffect(() => { fetchGroups(); }, []);
 
@@ -35,23 +37,33 @@ const Attendance = () => {
       if (isTeacher) {
         // O'qituvchini teachers kolleksiyasidan topish
         const allTeachers = await teachersAPI.getAll();
+        const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
+        
         const teacher = allTeachers.find(t => 
           t.id === userData?.id || 
-          t.email === userData?.email
+          t.email === userData?.email ||
+          t.phone === userData?.phone ||
+          normalizePhone(t.phone) === normalizePhone(userData?.phone)
         );
         
-        // Guruhlarni topish (ham teachers ID, ham users ID bilan)
-        if (teacher) {
-          const groups1 = await groupsAPI.getByTeacher(teacher.id);
-          groupsData = [...groups1];
-        }
-        const groups2 = await groupsAPI.getByTeacher(userData?.id);
+        console.log('Attendance - Found teacher:', teacher);
         
-        // Birlashtirish (dublikatlarni olib tashlash)
-        const allGroups = [...groupsData, ...groups2];
-        groupsData = allGroups.filter((g, index, self) => 
+        // Guruhlarni topish - barcha guruhlardan filter
+        const allGroups = await groupsAPI.getAll();
+        
+        if (teacher) {
+          groupsData = allGroups.filter(g => g.teacherId === teacher.id);
+        }
+        
+        // Users ID bilan ham
+        const groups2 = allGroups.filter(g => g.teacherId === userData?.id);
+        
+        // Birlashtirish
+        groupsData = [...groupsData, ...groups2].filter((g, index, self) => 
           index === self.findIndex(t => t.id === g.id)
         );
+        
+        console.log('Attendance - Teacher groups:', groupsData);
       } else if (isStudentOrParent) {
         // O'quvchi/Ota-ona faqat o'z guruhini ko'radi
         const allStudents = await studentsAPI.getAll();
@@ -109,6 +121,10 @@ const Attendance = () => {
       const attendanceMap = {};
       attendanceData.forEach(a => { attendanceMap[a.studentId] = a.status; });
       setAttendance(attendanceMap);
+      
+      // Agar davomat saqlangan bo'lsa, qulflash (admin bundan mustasno)
+      const hasExistingAttendance = attendanceData.length > 0;
+      setIsLocked(hasExistingAttendance && !isAdmin);
     } catch (err) { console.error(err); }
   };
 
