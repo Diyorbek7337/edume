@@ -2,95 +2,141 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
+    // Helper functions
     function isAuthenticated() {
       return request.auth != null;
     }
     
-    function getUserRole() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
     
-    function isAdminOrDirector() {
-      return isAuthenticated() && (getUserRole() == 'director' || getUserRole() == 'admin');
+    function getUserCenterId() {
+      return getUserData().centerId;
+    }
+    
+    function getUserRole() {
+      return getUserData().role;
     }
     
     function isDirector() {
       return isAuthenticated() && getUserRole() == 'director';
     }
     
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == 'admin';
+    }
+    
+    function isAdminOrDirector() {
+      return isDirector() || isAdmin();
+    }
+    
     function isTeacher() {
       return isAuthenticated() && getUserRole() == 'teacher';
     }
     
-    match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow create: if isAdminOrDirector();
-      allow update: if isAdminOrDirector() || request.auth.uid == userId;
-      allow delete: if isDirector();
+    function belongsToCenter(centerId) {
+      return isAuthenticated() && getUserCenterId() == centerId;
     }
     
-    match /students/{docId} {
+    // ==================== GLOBAL COLLECTIONS ====================
+    
+    // Centers - faqat o'qish uchun (yaratish public API orqali)
+    match /centers/{centerId} {
       allow read: if isAuthenticated();
-      allow create, update, delete: if isAdminOrDirector();
+      allow create: if true; // Registration uchun
+      allow update, delete: if belongsToCenter(centerId) && isDirector();
     }
     
-    match /teachers/{docId} {
-      allow read: if isAuthenticated();
-      allow create, update, delete: if isAdminOrDirector();
+    // Users - global, lekin centerId bilan filtrlangan
+    match /users/{odamId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == odamId || 
+        getUserCenterId() == resource.data.centerId
+      );
+      allow create: if true; // Registration uchun
+      allow update: if isAuthenticated() && (
+        request.auth.uid == odamId || 
+        (belongsToCenter(resource.data.centerId) && isAdminOrDirector())
+      );
+      allow delete: if isAuthenticated() && belongsToCenter(resource.data.centerId) && isDirector();
     }
     
-    match /groups/{docId} {
-      allow read: if isAuthenticated();
-      allow create, update, delete: if isAdminOrDirector();
+    // ==================== CENTER-SCOPED COLLECTIONS ====================
+    
+    // Center Settings
+    match /centers/{centerId}/settings/{docId} {
+      allow read: if belongsToCenter(centerId);
+      allow write: if belongsToCenter(centerId) && isAdminOrDirector();
     }
     
-    match /leads/{docId} {
-      allow read, write: if isAdminOrDirector();
+    // Students
+    match /centers/{centerId}/students/{docId} {
+      allow read: if belongsToCenter(centerId);
+      allow create, update: if belongsToCenter(centerId) && isAdminOrDirector();
+      allow delete: if belongsToCenter(centerId) && isDirector();
     }
     
-    match /payments/{docId} {
-      allow read: if isAuthenticated();
-      allow create, update, delete: if isAdminOrDirector();
+    // Teachers
+    match /centers/{centerId}/teachers/{docId} {
+      allow read: if belongsToCenter(centerId);
+      allow create, update: if belongsToCenter(centerId) && isAdminOrDirector();
+      allow delete: if belongsToCenter(centerId) && isDirector();
     }
     
-    match /attendance/{docId} {
-      allow read: if isAuthenticated();
-      allow create, update, delete: if isAdminOrDirector() || isTeacher();
+    // Groups
+    match /centers/{centerId}/groups/{docId} {
+      allow read: if belongsToCenter(centerId);
+      allow create, update: if belongsToCenter(centerId) && isAdminOrDirector();
+      allow delete: if belongsToCenter(centerId) && isDirector();
     }
     
-    match /grades/{docId} {
-      allow read: if isAuthenticated();
-      allow create, update, delete: if isAdminOrDirector() || isTeacher();
+    // Payments
+    match /centers/{centerId}/payments/{docId} {
+      allow read: if belongsToCenter(centerId);
+      allow create, update: if belongsToCenter(centerId) && isAdminOrDirector();
+      allow delete: if belongsToCenter(centerId) && isDirector();
     }
     
-    match /messages/{docId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      // Har kim o'z xabarlarini o'qilgan deb belgilashi mumkin
-      allow update: if isAuthenticated();
-      allow delete: if isAdminOrDirector();
+    // Attendance
+    match /centers/{centerId}/attendance/{docId} {
+      allow read: if belongsToCenter(centerId);
+      allow create, update: if belongsToCenter(centerId) && (isAdminOrDirector() || isTeacher());
+      allow delete: if belongsToCenter(centerId) && isAdminOrDirector();
     }
     
-    match /feedback/{docId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update: if isAdminOrDirector();
+    // Grades
+    match /centers/{centerId}/grades/{docId} {
+      allow read: if belongsToCenter(centerId);
+      allow create, update: if belongsToCenter(centerId) && (isAdminOrDirector() || isTeacher());
+      allow delete: if belongsToCenter(centerId) && isAdminOrDirector();
     }
     
-    match /settings/{docId} {
-      allow read: if isAuthenticated();
-      allow write: if isAdminOrDirector();
+    // Messages
+    match /centers/{centerId}/messages/{docId} {
+      allow read: if belongsToCenter(centerId);
+      allow create: if belongsToCenter(centerId);
+      allow update, delete: if belongsToCenter(centerId) && isAdminOrDirector();
     }
     
-    match /teacher_ratings/{docId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated(); // Har kim baho qo'yishi mumkin
-      allow update, delete: if isAdminOrDirector();
+    // Leads
+    match /centers/{centerId}/leads/{docId} {
+      allow read: if belongsToCenter(centerId);
+      allow create, update: if belongsToCenter(centerId) && isAdminOrDirector();
+      allow delete: if belongsToCenter(centerId) && isDirector();
     }
     
-    match /schedule/{docId} {
-      allow read: if isAuthenticated();
-      allow create, update, delete: if isAdminOrDirector();
+    // Schedule
+    match /centers/{centerId}/schedule/{docId} {
+      allow read: if belongsToCenter(centerId);
+      allow create, update, delete: if belongsToCenter(centerId) && isAdminOrDirector();
+    }
+    
+    // Teacher Ratings
+    match /centers/{centerId}/teacher_ratings/{docId} {
+      allow read: if belongsToCenter(centerId);
+      allow create: if belongsToCenter(centerId);
+      allow update, delete: if belongsToCenter(centerId) && isAdminOrDirector();
     }
   }
 }

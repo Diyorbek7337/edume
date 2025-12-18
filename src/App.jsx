@@ -3,6 +3,7 @@ import { AuthProvider } from './contexts/AuthContext';
 
 // Auth
 import Login from './components/auth/Login';
+import Register from './pages/Register';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 
 // Layout
@@ -32,6 +33,7 @@ function App() {
         <Routes>
           {/* Public */}
           <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
 
           {/* Protected */}
           <Route path="/" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>

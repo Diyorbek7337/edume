@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { Mail, Lock, GraduationCap } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button, Input, Card } from '../common';
@@ -24,6 +24,7 @@ const Login = () => {
       if (err.code === 'auth/user-not-found') setError('Bunday foydalanuvchi topilmadi');
       else if (err.code === 'auth/wrong-password') setError("Parol noto'g'ri");
       else if (err.code === 'auth/invalid-email') setError("Email formati noto'g'ri");
+      else if (err.code === 'auth/invalid-credential') setError("Email yoki parol noto'g'ri");
       else setError('Kirishda xatolik yuz berdi');
     } finally {
       setLoading(false);
@@ -31,18 +32,18 @@ const Login = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-primary-50 to-blue-100">
+    <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-primary-600 via-primary-700 to-primary-900">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary-600 mb-4">
-            <GraduationCap className="w-8 h-8 text-white" />
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-white shadow-lg mb-4">
+            <GraduationCap className="w-8 h-8 text-primary-600" />
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">EduCenter</h1>
-          <p className="text-gray-500 mt-1">O'quv markaz boshqaruv tizimi</p>
+          <h1 className="text-2xl font-bold text-white">EduCenter</h1>
+          <p className="text-primary-200 mt-1">O'quv markaz boshqaruv tizimi</p>
         </div>
 
         <Card>
-          <h2 className="text-xl font-semibold text-gray-900 mb-6">Tizimga kirish</h2>
+          <h2 className="text-xl font-semibold text-gray-900 mb-6 text-center">Tizimga kirish</h2>
           
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
@@ -75,9 +76,18 @@ const Login = () => {
               Kirish
             </Button>
           </form>
+          
+          <div className="mt-6 pt-6 border-t text-center">
+            <p className="text-gray-600 text-sm">
+              O'quv markazingiz yo'qmi?{' '}
+              <Link to="/register" className="text-primary-600 hover:underline font-semibold">
+                Ro'yxatdan o'ting
+              </Link>
+            </p>
+          </div>
         </Card>
 
-        <p className="text-center text-gray-500 text-sm mt-6">
+        <p className="text-center text-primary-200 text-sm mt-6">
           © 2024 EduCenter. Barcha huquqlar himoyalangan.
         </p>
       </div>

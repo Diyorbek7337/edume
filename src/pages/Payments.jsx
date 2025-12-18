@@ -10,10 +10,24 @@ import { ROLES } from '../utils/constants';
 import { formatMoney, formatDate } from '../utils/helpers';
 import { toast } from 'react-toastify';
 
+
 const Payments = () => {
   const { userData, role } = useAuth();
   const [payments, setPayments] = useState([]);
   const [students, setStudents] = useState([]);
+  // Sana bo‘yicha filtr (admin / direktor)
+const [dateFilter, setDateFilter] = useState('month');
+// today | week | month | range
+
+const [customRange, setCustomRange] = useState({
+  start: null,
+  end: null,
+});
+
+// Guruh bo‘yicha filtr (pending & debtors)
+const [groupFilter, setGroupFilter] = useState('');
+
+
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -70,6 +84,113 @@ const Payments = () => {
     return monthlyFee;
   };
 
+
+  const isInDateRange = (date, filter, range) => {
+  if (!date) return false;
+
+  const d = new Date(date);
+  const now = new Date();
+
+  if (filter === 'today') {
+    return d.toDateString() === now.toDateString();
+  }
+
+  if (filter === 'week') {
+    const start = new Date(now);
+    start.setDate(now.getDate() - 7);
+    return d >= start && d <= now;
+  }
+
+  if (filter === 'month') {
+    return (
+      d.getMonth() === now.getMonth() &&
+      d.getFullYear() === now.getFullYear()
+    );
+  }
+
+  if (filter === 'range' && range.start && range.end) {
+    return d >= range.start && d <= range.end;
+  }
+
+  return false;
+};
+
+const paidPaymentsFiltered = payments.filter(p =>
+  p.status === 'paid' &&
+  isInDateRange(p.paidAt, dateFilter, customRange)
+);
+
+const paidTotalAmount = paidPaymentsFiltered.reduce(
+  (sum, p) => sum + (p.amount || 0),
+  0
+);
+
+const paidStudentsCount = new Set(
+  paidPaymentsFiltered.map(p => p.studentId)
+).size;
+
+const getPendingStudents = () => {
+  const now = new Date();
+  const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  return students.filter(s => {
+    const paidThisMonth = payments.some(p =>
+      p.studentId === s.id &&
+      p.status === 'paid' &&
+      p.month === monthStr
+    );
+
+    const startDate = new Date(s.startDate);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
+    return !paidThisMonth && startDate <= endOfMonth;
+  });
+};
+
+const pendingStudents = getPendingStudents();
+
+const pendingTotalAmount = pendingStudents.reduce(
+  (sum, s) => sum + (s.monthlyFee || 0),
+  0
+);
+const getDebtors = () => {
+  const now = new Date();
+  const lastMonthStr = `${now.getFullYear()}-${String(now.getMonth()).padStart(2, '0')}`;
+
+  return students.filter(s => {
+    const startDate = new Date(s.startDate);
+    if (startDate >= new Date(now.getFullYear(), now.getMonth(), 1)) return false;
+
+    const paidLastMonth = payments.some(p =>
+      p.studentId === s.id &&
+      p.status === 'paid' &&
+      p.month === lastMonthStr
+    );
+
+    return !paidLastMonth;
+  });
+};
+
+const debtors = getDebtors();
+
+const debtorsTotalAmount = debtors.reduce(
+  (sum, s) => sum + (s.monthlyFee || 0),
+  0
+);
+const paidStudents = students.filter(s =>
+  payments.some(p =>
+    p.studentId === s.id &&
+    p.status === 'paid' &&
+    isInDateRange(p.paidAt, dateFilter, customRange)
+  )
+);
+const pendingFiltered = pendingStudents.filter(s =>
+  groupFilter ? s.groupId === groupFilter : true
+);
+
+const debtorsFiltered = debtors.filter(s =>
+  groupFilter ? s.groupId === groupFilter : true
+);
   // Joriy oy uchun to'lov qilinganmi tekshirish
   const hasPaymentForMonth = (studentId, year, month) => {
     const monthStr = `${year}-${String(month + 1).padStart(2, '0')}`;
@@ -346,7 +467,7 @@ const Payments = () => {
 
         {/* To'lov eslatmasi */}
         {!hasPaidThisMonth && paymentStatus?.status !== 'paid' && (
-          <Card padding="p-4" className="bg-orange-50 border-orange-300 border-2">
+          <Card padding="p-4" className="border-2 border-orange-300 bg-orange-50">
             <div className="flex items-start gap-3">
               <AlertCircle className="w-6 h-6 text-orange-600 flex-shrink-0 mt-0.5" />
               <div>
@@ -355,15 +476,15 @@ const Payments = () => {
                     ? "⚠️ Sizda qarzdorlik mavjud!" 
                     : "💰 Bu oy uchun to'lov qilish kerak"}
                 </h3>
-                <p className="text-sm text-orange-700 mt-1">
+                <p className="mt-1 text-sm text-orange-700">
                   {paymentStatus?.status === 'debtor' 
                     ? "Oldingi oy uchun to'lov qilinmagan. Iltimos, to'lovni amalga oshiring."
                     : `${now.toLocaleString('uz-UZ', { month: 'long' })} oyi uchun to'lov qilish muddati keldi.`}
                 </p>
-                <p className="text-lg font-bold text-orange-800 mt-2">
+                <p className="mt-2 text-lg font-bold text-orange-800">
                   To'lov summasi: {formatMoney(proratedFee)}
                   {proratedFee !== monthlyFee && (
-                    <span className="text-sm font-normal ml-2">(proporsional)</span>
+                    <span className="ml-2 text-sm font-normal">(proporsional)</span>
                   )}
                 </p>
               </div>
@@ -372,7 +493,7 @@ const Payments = () => {
         )}
 
         {/* Statistika */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
           <Card padding="p-4" className="bg-gradient-to-br from-blue-50 to-blue-100">
             <div className="text-center">
               <p className="text-sm text-blue-600">Oylik to'lov</p>
@@ -411,7 +532,7 @@ const Payments = () => {
 
         {/* To'lov tarixi */}
         <Card>
-          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+          <h3 className="flex items-center gap-2 mb-4 text-lg font-semibold">
             <CreditCard className="w-5 h-5 text-primary-600" />
             To'lov tarixi
           </h3>
@@ -433,7 +554,7 @@ const Payments = () => {
                       <p className="text-sm text-gray-500">{formatDate(payment.paidAt || payment.createdAt)}</p>
                     </div>
                     <div className="text-right">
-                      <p className="font-bold text-lg">{formatMoney(payment.amount)}</p>
+                      <p className="text-lg font-bold">{formatMoney(payment.amount)}</p>
                       <Badge variant={payment.status === 'paid' ? 'success' : 'warning'}>
                         {payment.status === 'paid' ? 'To\'langan' : 'Kutilmoqda'}
                       </Badge>
@@ -463,7 +584,7 @@ const Payments = () => {
         </div>
 
         {/* Statistika */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
           <Card padding="p-4" className="bg-gradient-to-br from-green-50 to-green-100">
             <div className="text-center">
               <p className="text-sm text-green-600">Jami tushum</p>
@@ -499,7 +620,7 @@ const Payments = () => {
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-2 border-b pb-2 overflow-x-auto">
+        <div className="flex gap-2 pb-2 overflow-x-auto border-b">
           {[
             { id: 'students', label: "O'quvchilar", count: students.length },
             { id: 'pending', label: `Kutilmoqda (${monthNames[now.getMonth()]})`, count: stats.pendingCount },
@@ -627,7 +748,7 @@ const Payments = () => {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">To'lovlar</h1>
           <p className="text-gray-500">To'lovlarni boshqarish - {monthNames[now.getMonth()]} {now.getFullYear()}</p>
@@ -636,10 +757,10 @@ const Payments = () => {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <Card padding="p-4" className="bg-gradient-to-br from-green-50 to-green-100">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-green-500 rounded-xl flex items-center justify-center">
+            <div className="flex items-center justify-center w-12 h-12 bg-green-500 rounded-xl">
               <CheckCircle className="w-6 h-6 text-white" />
             </div>
             <div>
@@ -651,7 +772,7 @@ const Payments = () => {
         
         <Card padding="p-4" className="bg-gradient-to-br from-yellow-50 to-yellow-100">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-yellow-500 rounded-xl flex items-center justify-center">
+            <div className="flex items-center justify-center w-12 h-12 bg-yellow-500 rounded-xl">
               <Clock className="w-6 h-6 text-white" />
             </div>
             <div>
@@ -663,7 +784,7 @@ const Payments = () => {
         
         <Card padding="p-4" className="bg-gradient-to-br from-red-50 to-red-100">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-red-500 rounded-xl flex items-center justify-center">
+            <div className="flex items-center justify-center w-12 h-12 bg-red-500 rounded-xl">
               <AlertTriangle className="w-6 h-6 text-white" />
             </div>
             <div>
@@ -675,7 +796,7 @@ const Payments = () => {
         
         <Card padding="p-4" className="bg-gradient-to-br from-blue-50 to-blue-100">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-blue-500 rounded-xl flex items-center justify-center">
+            <div className="flex items-center justify-center w-12 h-12 bg-blue-500 rounded-xl">
               <TrendingUp className="w-6 h-6 text-white" />
             </div>
             <div>
@@ -688,7 +809,7 @@ const Payments = () => {
 
       {/* Tabs & Search */}
       <Card padding="p-4">
-        <div className="flex flex-col md:flex-row md:items-center gap-4">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center">
           <div className="flex gap-2 overflow-x-auto">
             {[
               { id: 'students', label: "Barcha o'quvchilar", icon: Users },
@@ -709,13 +830,13 @@ const Payments = () => {
           </div>
           <div className="flex-1">
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+              <Search className="absolute w-5 h-5 text-gray-400 -translate-y-1/2 left-3 top-1/2" />
               <input
                 type="text"
                 placeholder="Qidirish..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 rounded-lg border focus:ring-2 focus:ring-primary-500"
+                className="w-full py-2 pl-10 pr-4 border rounded-lg focus:ring-2 focus:ring-primary-500"
               />
             </div>
           </div>
@@ -842,7 +963,7 @@ const Payments = () => {
             />
           </div>
           {formData.amount && formData.discount > 0 && (
-            <div className="p-3 bg-green-50 rounded-lg">
+            <div className="p-3 rounded-lg bg-green-50">
               <p className="text-sm text-green-700">
                 Chegirma bilan: <strong>{formatMoney(parseInt(formData.amount) - (parseInt(formData.amount) * parseInt(formData.discount) / 100))}</strong>
               </p>

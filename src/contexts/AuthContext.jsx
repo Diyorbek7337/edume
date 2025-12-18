@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { signInWithEmailAndPassword, signOut as firebaseSignOut, onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
-import { auth, db } from '../services/firebase';
+import { auth, db, setCurrentCenter, getCurrentCenter } from '../services/firebase';
 
 const AuthContext = createContext(null);
 
@@ -14,6 +14,7 @@ export const useAuth = () => {
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [userData, setUserData] = useState(null);
+  const [centerData, setCenterData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -23,7 +24,17 @@ export const AuthProvider = ({ children }) => {
         try {
           const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
           if (userDoc.exists()) {
-            setUserData({ id: userDoc.id, ...userDoc.data() });
+            const data = { id: userDoc.id, ...userDoc.data() };
+            setUserData(data);
+            
+            // Center ma'lumotlarini olish va set qilish
+            if (data.centerId) {
+              setCurrentCenter(data.centerId);
+              const centerDoc = await getDoc(doc(db, 'centers', data.centerId));
+              if (centerDoc.exists()) {
+                setCenterData({ id: centerDoc.id, ...centerDoc.data() });
+              }
+            }
           }
         } catch (err) {
           console.error('Error fetching user data:', err);
@@ -31,6 +42,8 @@ export const AuthProvider = ({ children }) => {
       } else {
         setUser(null);
         setUserData(null);
+        setCenterData(null);
+        setCurrentCenter(null);
       }
       setLoading(false);
     });
@@ -41,7 +54,17 @@ export const AuthProvider = ({ children }) => {
     const result = await signInWithEmailAndPassword(auth, email, password);
     const userDoc = await getDoc(doc(db, 'users', result.user.uid));
     if (userDoc.exists()) {
-      setUserData({ id: userDoc.id, ...userDoc.data() });
+      const data = { id: userDoc.id, ...userDoc.data() };
+      setUserData(data);
+      
+      // Center set qilish
+      if (data.centerId) {
+        setCurrentCenter(data.centerId);
+        const centerDoc = await getDoc(doc(db, 'centers', data.centerId));
+        if (centerDoc.exists()) {
+          setCenterData({ id: centerDoc.id, ...centerDoc.data() });
+        }
+      }
     }
     return result;
   };
@@ -50,16 +73,20 @@ export const AuthProvider = ({ children }) => {
     await firebaseSignOut(auth);
     setUser(null);
     setUserData(null);
+    setCenterData(null);
+    setCurrentCenter(null);
   };
 
   const value = {
     user,
     userData,
+    centerData,
     loading,
     signIn,
     signOut,
     isAuthenticated: !!user,
     role: userData?.role || null,
+    centerId: userData?.centerId || getCurrentCenter(),
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

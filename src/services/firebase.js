@@ -14,4 +14,34 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+
+// Center context for multi-tenant
+let currentCenterId = null;
+
+export const setCurrentCenter = (centerId) => {
+  currentCenterId = centerId;
+  if (centerId) {
+    localStorage.setItem('currentCenterId', centerId);
+  } else {
+    localStorage.removeItem('currentCenterId');
+  }
+};
+
+export const getCurrentCenter = () => {
+  if (!currentCenterId) {
+    currentCenterId = localStorage.getItem('currentCenterId');
+  }
+  return currentCenterId;
+};
+
+// Collection paths with center prefix
+export const getCenterCollection = (collectionName) => {
+  const centerId = getCurrentCenter();
+  if (!centerId) {
+    console.warn('No center selected!');
+    return collectionName; // Fallback
+  }
+  return `centers/${centerId}/${collectionName}`;
+};
+
 export default app;

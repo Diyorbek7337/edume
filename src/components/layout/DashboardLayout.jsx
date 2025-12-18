@@ -91,14 +91,14 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
   const sidebarContent = (
     <>
       {/* Logo */}
-      <div className="h-16 flex items-center justify-between px-4 border-b border-gray-200">
+      <div className="flex items-center justify-between h-16 px-4 border-b border-gray-200">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center">
+          <div className="flex items-center justify-center w-10 h-10 bg-primary-600 rounded-xl">
             <GraduationCap className="w-6 h-6 text-white" />
           </div>
-          {!collapsed && <span className="font-bold text-xl text-gray-900">EduCenter</span>}
+          {!collapsed && <span className="text-xl font-bold text-gray-900">EduCenter</span>}
         </div>
-        <button onClick={onMobileClose || onToggle} className="lg:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-lg">
+        <button onClick={onMobileClose || onToggle} className="p-2 text-gray-500 rounded-lg lg:hidden hover:bg-gray-100">
           <X className="w-5 h-5" />
         </button>
       </div>
@@ -116,8 +116,8 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
               ${collapsed ? 'justify-center' : ''}
             `}
           >
-            <item.icon className="w-5 h-5 flex-shrink-0" />
-            {!collapsed && <span className="font-medium flex-1">{item.label}</span>}
+            <item.icon className="flex-shrink-0 w-5 h-5" />
+            {!collapsed && <span className="flex-1 font-medium">{item.label}</span>}
             {item.badge > 0 && (
               <span className={`
                 absolute ${collapsed ? 'top-0 right-0' : 'right-3'}
@@ -172,7 +172,7 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
               <p className="text-xs text-gray-500">{ROLE_NAMES[role]}</p>
             </div>
           )}
-          <button onClick={handleSignOut} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg" title="Chiqish">
+          <button onClick={handleSignOut} className="p-2 text-gray-400 rounded-lg hover:text-red-500 hover:bg-red-50" title="Chiqish">
             <LogOut className="w-4 h-4" />
           </button>
         </div>
@@ -190,8 +190,8 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
       {/* Mobile Sidebar */}
       {mobileOpen && (
         <>
-          <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={onMobileClose} />
-          <aside className="fixed left-0 top-0 h-screen w-64 bg-white border-r border-gray-200 z-50 lg:hidden flex flex-col">
+          <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={onMobileClose} />
+          <aside className="fixed top-0 left-0 z-50 flex flex-col w-64 h-screen bg-white border-r border-gray-200 lg:hidden">
             {sidebarContent}
           </aside>
         </>
@@ -201,21 +201,34 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
 };
 
 const Header = ({ onMenuClick, unreadCount }) => {
-  const { userData } = useAuth();
+  const { userData, centerData } = useAuth();
   const navigate = useNavigate();
 
   return (
-    <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 lg:px-6">
+    <header className="flex items-center justify-between h-16 px-4 bg-white border-b border-gray-200 lg:px-6">
       <div className="flex items-center gap-4">
-        <button onClick={onMenuClick} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg lg:hidden">
+        <button onClick={onMenuClick} className="p-2 text-gray-500 rounded-lg hover:bg-gray-100 lg:hidden">
           <Menu className="w-5 h-5" />
         </button>
+        
+        {/* Center name */}
+        {centerData?.name && (
+          <div className="hidden sm:block">
+            <h2 className="font-semibold text-gray-900">{centerData.name}</h2>
+            {centerData.subscription === 'trial' && (
+              <span className="text-xs text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full">
+                Sinov muddati
+              </span>
+            )}
+          </div>
+        )}
+        
         <div className="relative hidden md:block">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <Search className="absolute w-4 h-4 text-gray-400 -translate-y-1/2 left-3 top-1/2" />
           <input
             type="text"
             placeholder="Qidirish..."
-            className="pl-10 pr-4 py-2 w-64 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+            className="w-64 py-2 pl-10 pr-4 text-sm border border-gray-200 rounded-lg bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500"
           />
         </div>
       </div>
@@ -224,11 +237,11 @@ const Header = ({ onMenuClick, unreadCount }) => {
         {/* Notifications */}
         <button 
           onClick={() => navigate('/messages')}
-          className="relative p-2 text-gray-500 hover:bg-gray-100 rounded-lg"
+          className="relative p-2 text-gray-500 rounded-lg hover:bg-gray-100"
         >
           <Bell className="w-5 h-5" />
           {unreadCount > 0 && (
-            <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs font-bold rounded-full flex items-center justify-center">
+            <span className="absolute flex items-center justify-center w-5 h-5 text-xs font-bold text-white bg-red-500 rounded-full -top-1 -right-1">
               {unreadCount > 9 ? '9+' : unreadCount}
             </span>
           )}

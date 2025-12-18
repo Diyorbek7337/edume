@@ -34,37 +34,3 @@ export const getInitials = (name) => {
 export const generateId = () => {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
 };
-// src/utils/date.js
-
-// YYYY-MM-DD (local time)
-export const toLocalDateStr = (date) =>
-  date.toLocaleDateString('en-CA');
-
-// Har xil date formatlarni bitta formatga keltiradi
-export const normalizeDate = (value) => {
-  if (!value) return null;
-
-  // STRING formatlar
-  if (typeof value === 'string') {
-    // DD.MM.YYYY → YYYY-MM-DD
-    if (value.includes('.')) {
-      const [day, month, year] = value.split('.');
-      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-    }
-    // Already YYYY-MM-DD
-    return value;
-  }
-
-  // Firestore Timestamp
-  if (value?.toDate) {
-    return toLocalDateStr(value.toDate());
-  }
-
-  // Timestamp seconds
-  if (value?.seconds) {
-    return toLocalDateStr(new Date(value.seconds * 1000));
-  }
-
-  // Date yoki number
-  return toLocalDateStr(new Date(value));
-};
