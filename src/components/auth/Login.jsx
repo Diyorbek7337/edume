@@ -3,6 +3,8 @@ import { useNavigate, Link } from 'react-router-dom';
 import { Mail, Lock, GraduationCap } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button, Input, Card } from '../common';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../../services/firebase';
 
 const Login = () => {
   const [email, setEmail] = useState('');
@@ -18,8 +20,20 @@ const Login = () => {
     setLoading(true);
 
     try {
-      await signIn(email, password);
-      navigate('/dashboard');
+      const result = await signIn(email, password);
+      
+      // Role ni tekshirish va to'g'ri joyga yo'naltirish
+      const userDoc = await getDoc(doc(db, 'users', result.user.uid));
+      if (userDoc.exists()) {
+        const userData = userDoc.data();
+        if (userData.role === 'super_admin') {
+          navigate('/super-admin');
+        } else {
+          navigate('/dashboard');
+        }
+      } else {
+        navigate('/dashboard');
+      }
     } catch (err) {
       if (err.code === 'auth/user-not-found') setError('Bunday foydalanuvchi topilmadi');
       else if (err.code === 'auth/wrong-password') setError("Parol noto'g'ri");

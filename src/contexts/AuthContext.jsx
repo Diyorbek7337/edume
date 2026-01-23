@@ -29,12 +29,17 @@ export const AuthProvider = ({ children }) => {
             
             // Center ma'lumotlarini olish va set qilish
             if (data.centerId) {
+              console.log('Setting centerId:', data.centerId);
               setCurrentCenter(data.centerId);
               const centerDoc = await getDoc(doc(db, 'centers', data.centerId));
               if (centerDoc.exists()) {
                 setCenterData({ id: centerDoc.id, ...centerDoc.data() });
               }
+            } else {
+              console.warn('User has no centerId:', data);
             }
+          } else {
+            console.warn('User document not found for:', firebaseUser.uid);
           }
         } catch (err) {
           console.error('Error fetching user data:', err);
@@ -59,11 +64,14 @@ export const AuthProvider = ({ children }) => {
       
       // Center set qilish
       if (data.centerId) {
+        console.log('SignIn - Setting centerId:', data.centerId);
         setCurrentCenter(data.centerId);
         const centerDoc = await getDoc(doc(db, 'centers', data.centerId));
         if (centerDoc.exists()) {
           setCenterData({ id: centerDoc.id, ...centerDoc.data() });
         }
+      } else {
+        console.warn('SignIn - User has no centerId');
       }
     }
     return result;
@@ -77,6 +85,9 @@ export const AuthProvider = ({ children }) => {
     setCurrentCenter(null);
   };
 
+  // centerId ni userData dan yoki getCurrentCenter dan olish
+  const centerId = userData?.centerId || getCurrentCenter();
+
   const value = {
     user,
     userData,
@@ -86,7 +97,7 @@ export const AuthProvider = ({ children }) => {
     signOut,
     isAuthenticated: !!user,
     role: userData?.role || null,
-    centerId: userData?.centerId || getCurrentCenter(),
+    centerId,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

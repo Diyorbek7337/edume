@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react';
-import { Search, Plus, Edit, Trash2, GraduationCap } from 'lucide-react';
+import { Search, Plus, Edit, Trash2, GraduationCap, AlertTriangle } from 'lucide-react';
 import { Card, Button, Input, Badge, Avatar, Modal, Loading, EmptyState } from '../components/common';
 import { teachersAPI, groupsAPI, usersAPI } from '../services/api';
 import { formatPhone } from '../utils/helpers';
 import { ROLES } from '../utils/constants';
+import { checkLimit, SUBSCRIPTION_PLANS } from '../utils/subscriptions';
+import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'react-toastify';
 
 const Teachers = () => {
+  const { centerData, role } = useAuth();
   const [teachers, setTeachers] = useState([]);
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -14,10 +17,17 @@ const Teachers = () => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showLimitModal, setShowLimitModal] = useState(false);
   const [selectedTeacher, setSelectedTeacher] = useState(null);
-  const [formData, setFormData] = useState({ fullName: '', phone: '', email: '', subject: '', password: '' });
+  const [formData, setFormData] = useState({ fullName: '', phone: '', email: '', subject: '', password: '', telegram: '' });
   const [formLoading, setFormLoading] = useState(false);
   const [formError, setFormError] = useState('');
+
+  const isDirector = role === ROLES.DIRECTOR; // Faqat direktor o'chira oladi
+
+  // Subscription limit
+  const subscription = centerData?.subscription || 'trial';
+  const limitCheck = checkLimit(subscription, 'teachers', teachers.length);
 
   useEffect(() => { fetchData(); }, []);
 
@@ -52,12 +62,16 @@ const Teachers = () => {
     setFormLoading(true);
     setFormError('');
     
+    // Telegram ni aniqlash (telefon yoki username)
+    const telegram = formData.telegram || formData.phone.replace(/\D/g, '');
+    
     try {
       // 1. Firebase Auth'da foydalanuvchi yaratish
       await usersAPI.create({
         fullName: formData.fullName,
         email: formData.email,
         phone: formData.phone,
+        telegram: telegram,
         role: ROLES.TEACHER
       }, formData.password);
       
@@ -66,6 +80,7 @@ const Teachers = () => {
         fullName: formData.fullName,
         email: formData.email,
         phone: formData.phone,
+        telegram: telegram,
         subject: formData.subject,
         status: 'active'
       });
@@ -156,37 +171,63 @@ const Teachers = () => {
 
   if (loading) return <Loading fullScreen text="Yuklanmoqda..." />;
 
+  const handleAddClick = () => {
+    if (!limitCheck.allowed) {
+      setShowLimitModal(true);
+      return;
+    }
+    resetForm();
+    setShowAddModal(true);
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      {/* Limit warning */}
+      {limitCheck.limit !== -1 && limitCheck.remaining <= 2 && limitCheck.remaining > 0 && (
+        <div className="flex items-center gap-3 p-4 border border-yellow-200 rounded-lg bg-yellow-50">
+          <AlertTriangle className="w-5 h-5 text-yellow-600" />
+          <p className="text-yellow-800">
+            <span className="font-medium">Limit yaqinlashmoqda!</span> {limitCheck.remaining} ta o'qituvchi qo'shish mumkin.
+          </p>
+        </div>
+      )}
+
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">O'qituvchilar</h1>
-          <p className="text-gray-500">Jami {teachers.length} ta o'qituvchi</p>
+          <p className="text-gray-500">
+            Jami {teachers.length} ta o'qituvchi
+            {limitCheck.limit !== -1 && <span className="ml-2 text-sm">(limit: {limitCheck.limit})</span>}
+          </p>
         </div>
-        <Button icon={Plus} onClick={() => { resetForm(); setShowAddModal(true); }}>
+        <Button 
+          icon={Plus} 
+          onClick={handleAddClick}
+          disabled={!limitCheck.allowed}
+        >
           Yangi o'qituvchi
         </Button>
       </div>
 
       <Card padding="p-4">
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+          <Search className="absolute w-5 h-5 text-gray-400 -translate-y-1/2 left-3 top-1/2" />
           <input 
             type="text" 
             placeholder="Ism, telefon yoki fan bo'yicha qidirish..." 
             value={searchQuery} 
             onChange={(e) => setSearchQuery(e.target.value)} 
-            className="w-full pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500" 
+            className="w-full py-2 pl-10 pr-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500" 
           />
         </div>
       </Card>
 
       {filteredTeachers.length > 0 ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           {filteredTeachers.map(teacher => {
             const teacherGroups = getTeacherGroups(teacher.id);
             return (
-              <Card key={teacher.id} className="hover:shadow-md transition">
+              <Card key={teacher.id} className="transition hover:shadow-md">
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
                     <Avatar name={teacher.fullName} size="lg" />
@@ -205,26 +246,29 @@ const Teachers = () => {
                   <p>📚 {teacherGroups.length} ta guruh</p>
                 </div>
                 {teacherGroups.length > 0 && (
-                  <div className="mt-3 flex flex-wrap gap-1">
+                  <div className="flex flex-wrap gap-1 mt-3">
                     {teacherGroups.slice(0, 3).map(g => (
                       <Badge key={g.id} variant="primary">{g.name}</Badge>
                     ))}
                     {teacherGroups.length > 3 && <Badge>+{teacherGroups.length - 3}</Badge>}
                   </div>
                 )}
-                <div className="mt-4 pt-4 border-t flex justify-end gap-1">
+                <div className="flex justify-end gap-1 pt-4 mt-4 border-t">
                   <button 
                     onClick={() => openEditModal(teacher)} 
-                    className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"
+                    className="p-2 text-gray-400 rounded-lg hover:text-blue-600 hover:bg-blue-50"
                   >
                     <Edit className="w-4 h-4" />
                   </button>
-                  <button 
-                    onClick={() => { setSelectedTeacher(teacher); setShowDeleteModal(true); }} 
-                    className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  {isDirector && (
+                    <button 
+                      onClick={() => { setSelectedTeacher(teacher); setShowDeleteModal(true); }} 
+                      className="p-2 text-gray-400 rounded-lg hover:text-red-600 hover:bg-red-50"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                
                 </div>
               </Card>
             );
@@ -244,11 +288,11 @@ const Teachers = () => {
       <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title="Yangi o'qituvchi qo'shish" size="lg">
         <form onSubmit={handleAdd} className="space-y-4">
           {formError && (
-            <div className="p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm">
+            <div className="p-3 text-sm text-red-600 border border-red-200 rounded-lg bg-red-50">
               {formError}
             </div>
           )}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <Input 
               label="To'liq ismi" 
               value={formData.fullName} 
@@ -301,7 +345,7 @@ const Teachers = () => {
       <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title="O'qituvchini tahrirlash">
         <form onSubmit={handleEdit} className="space-y-4">
           {formError && (
-            <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{formError}</div>
+            <div className="p-3 text-sm text-red-600 rounded-lg bg-red-50">{formError}</div>
           )}
           <Input 
             label="To'liq ismi" 
@@ -336,12 +380,29 @@ const Teachers = () => {
 
       {/* Delete Modal */}
       <Modal isOpen={showDeleteModal} onClose={() => setShowDeleteModal(false)} title="O'qituvchini o'chirish">
-        <p className="text-gray-600 mb-4">
+        <p className="mb-4 text-gray-600">
           <strong>{selectedTeacher?.fullName}</strong> ni o'chirishni xohlaysizmi?
         </p>
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setShowDeleteModal(false)}>Bekor qilish</Button>
           <Button variant="danger" loading={formLoading} onClick={handleDelete}>O'chirish</Button>
+        </div>
+      </Modal>
+
+      {/* Limit Modal */}
+      <Modal isOpen={showLimitModal} onClose={() => setShowLimitModal(false)} title="Limit tugadi">
+        <div className="py-4 text-center">
+          <div className="flex items-center justify-center w-16 h-16 mx-auto mb-4 bg-red-100 rounded-full">
+            <AlertTriangle className="w-8 h-8 text-red-600" />
+          </div>
+          <h3 className="mb-2 text-lg font-semibold text-gray-900">O'qituvchilar limiti tugadi</h3>
+          <p className="mb-4 text-gray-600">
+            {SUBSCRIPTION_PLANS[subscription]?.nameUz || 'Joriy'} tarifda {limitCheck.limit} ta o'qituvchi cheklovi mavjud.
+          </p>
+          <div className="flex justify-center gap-2">
+            <Button variant="ghost" onClick={() => setShowLimitModal(false)}>Yopish</Button>
+            <Button onClick={() => window.location.href = '/settings'}>Tarifni yangilash</Button>
+          </div>
         </div>
       </Modal>
     </div>

@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
 import { Search, Plus, Edit, Trash2, Users, Clock, Calendar, ArrowLeft, TrendingUp, TrendingDown, Award, AlertTriangle } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Avatar, Table, Modal, Loading, EmptyState } from '../components/common';
-import { groupsAPI, teachersAPI, studentsAPI, gradesAPI, attendanceAPI } from '../services/api';
+import { groupsAPI, teachersAPI, studentsAPI, gradesAPI, attendanceAPI, scheduleAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
 import { formatMoney } from '../utils/helpers';
+import { checkLimit, SUBSCRIPTION_PLANS } from '../utils/subscriptions';
 
 const Groups = () => {
-  const { userData, role } = useAuth();
+  const { userData, role, centerData } = useAuth();
   const [groups, setGroups] = useState([]);
   const [teachers, setTeachers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -17,6 +18,7 @@ const Groups = () => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showLimitModal, setShowLimitModal] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState(null);
   
   // Group Details View
@@ -25,11 +27,45 @@ const Groups = () => {
   const [groupGrades, setGroupGrades] = useState([]);
   const [loadingDetails, setLoadingDetails] = useState(false);
   
-  const [formData, setFormData] = useState({ name: '', teacherId: '', days: '', time: '', price: '', maxStudents: '' });
+  const [formData, setFormData] = useState({ 
+    name: '', 
+    teacherId: '', 
+    scheduleDays: [], // Dars kunlari array
+    startTime: '09:00',
+    endTime: '10:30',
+    price: '', 
+    maxStudents: '',
+    room: '' // Xona
+  });
   const [formLoading, setFormLoading] = useState(false);
+
+  // Hafta kunlari
+  const WEEKDAYS = [
+    { id: 1, short: 'Du', full: 'Dushanba' },
+    { id: 2, short: 'Se', full: 'Seshanba' },
+    { id: 3, short: 'Chor', full: 'Chorshanba' },
+    { id: 4, short: 'Pay', full: 'Payshanba' },
+    { id: 5, short: 'Ju', full: 'Juma' },
+    { id: 6, short: 'Sha', full: 'Shanba' },
+    { id: 0, short: 'Yak', full: 'Yakshanba' },
+  ];
+
+  const toggleDay = (dayId) => {
+    setFormData(prev => ({
+      ...prev,
+      scheduleDays: prev.scheduleDays.includes(dayId)
+        ? prev.scheduleDays.filter(d => d !== dayId)
+        : [...prev.scheduleDays, dayId]
+    }));
+  };
 
   const isTeacher = role === ROLES.TEACHER;
   const isAdmin = role === ROLES.ADMIN || role === ROLES.DIRECTOR;
+  const isDirector = role === ROLES.DIRECTOR; // Faqat direktor o'chira oladi
+
+  // Subscription limit
+  const subscription = centerData?.subscription || 'trial';
+  const limitCheck = checkLimit(subscription, 'groups', groups.length);
 
   useEffect(() => { fetchData(); }, []);
 
@@ -80,7 +116,16 @@ const Groups = () => {
 
   const filteredGroups = groups.filter(g => g.name?.toLowerCase().includes(searchQuery.toLowerCase()));
 
-  const resetForm = () => setFormData({ name: '', teacherId: '', days: '', time: '', price: '', maxStudents: '' });
+  const resetForm = () => setFormData({ 
+    name: '', 
+    teacherId: '', 
+    scheduleDays: [], 
+    startTime: '09:00', 
+    endTime: '10:30', 
+    price: '', 
+    maxStudents: '',
+    room: ''
+  });
 
   // Guruh tafsilotlarini ko'rish
   const viewGroupDetails = async (group) => {
@@ -130,23 +175,61 @@ const Groups = () => {
 
   const handleAdd = async (e) => {
     e.preventDefault();
+    if (formData.scheduleDays.length === 0) {
+      alert("Kamida bitta dars kunini tanlang");
+      return;
+    }
     setFormLoading(true);
     try {
       const teacher = teachers.find(t => t.id === formData.teacherId);
+      const daysText = formData.scheduleDays
+        .sort((a,b) => a-b)
+        .map(d => WEEKDAYS.find(w => w.id === d)?.short)
+        .join(', ');
+      const timeText = `${formData.startTime}-${formData.endTime}`;
+      
       const newGroup = await groupsAPI.create({
         name: formData.name,
         teacherId: formData.teacherId,
         teacherName: teacher?.fullName || '',
-        schedule: { days: formData.days, time: formData.time },
+        schedule: { 
+          days: daysText, 
+          time: timeText,
+          scheduleDays: formData.scheduleDays, // Array sifatida ham saqlash
+          startTime: formData.startTime,
+          endTime: formData.endTime,
+          room: formData.room
+        },
         price: Number(formData.price),
         maxStudents: Number(formData.maxStudents),
+        room: formData.room,
         studentsCount: 0,
         status: 'active'
       });
+      
+      // Jadvalga avtomatik qo'shish (har bir kun uchun)
+      for (const dayId of formData.scheduleDays) {
+        await scheduleAPI.create({
+          groupId: newGroup.id,
+          groupName: formData.name,
+          teacherId: formData.teacherId,
+          teacherName: teacher?.fullName || '',
+          dayOfWeek: dayId,
+          dayName: WEEKDAYS.find(w => w.id === dayId)?.full,
+          startTime: formData.startTime,
+          endTime: formData.endTime,
+          room: formData.room || '',
+          status: 'active'
+        });
+      }
+      
       setGroups([newGroup, ...groups]);
       setShowAddModal(false);
       resetForm();
-    } catch (err) { alert("Xatolik yuz berdi"); }
+    } catch (err) { 
+      console.error(err);
+      alert("Xatolik yuz berdi: " + err.message); 
+    }
     finally { setFormLoading(false); }
   };
 
@@ -155,26 +238,70 @@ const Groups = () => {
     setFormLoading(true);
     try {
       const teacher = teachers.find(t => t.id === formData.teacherId);
+      const daysText = formData.scheduleDays
+        .sort((a,b) => a-b)
+        .map(d => WEEKDAYS.find(w => w.id === d)?.short)
+        .join(', ');
+      const timeText = `${formData.startTime}-${formData.endTime}`;
+      
       await groupsAPI.update(selectedGroup.id, {
         name: formData.name,
         teacherId: formData.teacherId,
         teacherName: teacher?.fullName || '',
-        schedule: { days: formData.days, time: formData.time },
+        schedule: { 
+          days: daysText, 
+          time: timeText,
+          scheduleDays: formData.scheduleDays,
+          startTime: formData.startTime,
+          endTime: formData.endTime,
+          room: formData.room
+        },
         price: Number(formData.price),
-        maxStudents: Number(formData.maxStudents)
+        maxStudents: Number(formData.maxStudents),
+        room: formData.room
       });
+      
+      // Eski jadval yozuvlarini o'chirish va yangilarini qo'shish
+      try {
+        const existingSchedule = await scheduleAPI.getByGroup(selectedGroup.id);
+        for (const entry of existingSchedule) {
+          await scheduleAPI.delete(entry.id);
+        }
+        
+        // Yangi jadval yozuvlarini qo'shish
+        for (const dayId of formData.scheduleDays) {
+          await scheduleAPI.create({
+            groupId: selectedGroup.id,
+            groupName: formData.name,
+            teacherId: formData.teacherId,
+            teacherName: teacher?.fullName || '',
+            dayOfWeek: dayId,
+            dayName: WEEKDAYS.find(w => w.id === dayId)?.full,
+            startTime: formData.startTime,
+            endTime: formData.endTime,
+            room: formData.room || '',
+            status: 'active'
+          });
+        }
+      } catch (scheduleErr) {
+        console.log('Schedule update warning:', scheduleErr);
+      }
+      
       setGroups(groups.map(g => g.id === selectedGroup.id ? {
         ...g,
         name: formData.name,
         teacherId: formData.teacherId,
         teacherName: teacher?.fullName || '',
-        schedule: { days: formData.days, time: formData.time },
+        schedule: { days: daysText, time: timeText, scheduleDays: formData.scheduleDays },
         price: Number(formData.price),
         maxStudents: Number(formData.maxStudents)
       } : g));
       setShowEditModal(false);
       resetForm();
-    } catch (err) { alert("Xatolik yuz berdi"); }
+    } catch (err) { 
+      console.error(err);
+      alert("Xatolik yuz berdi"); 
+    }
     finally { setFormLoading(false); }
   };
 
@@ -191,13 +318,34 @@ const Groups = () => {
   const openEditModal = (group, e) => {
     e?.stopPropagation();
     setSelectedGroup(group);
+    
+    // Eski format (days string) dan scheduleDays array ga o'tkazish
+    let scheduleDays = group.schedule?.scheduleDays || [];
+    if (scheduleDays.length === 0 && group.schedule?.days) {
+      // Eski formatdan konvertatsiya
+      const daysStr = group.schedule.days.toLowerCase();
+      if (daysStr.includes('du')) scheduleDays.push(1);
+      if (daysStr.includes('se')) scheduleDays.push(2);
+      if (daysStr.includes('chor')) scheduleDays.push(3);
+      if (daysStr.includes('pay')) scheduleDays.push(4);
+      if (daysStr.includes('ju')) scheduleDays.push(5);
+      if (daysStr.includes('sha')) scheduleDays.push(6);
+      if (daysStr.includes('yak')) scheduleDays.push(0);
+    }
+    
+    // Vaqtni ajratish
+    const timeStr = group.schedule?.time || '';
+    const [startTime, endTime] = timeStr.split('-').map(t => t?.trim() || '');
+    
     setFormData({
       name: group.name || '',
       teacherId: group.teacherId || '',
-      days: group.schedule?.days || '',
-      time: group.schedule?.time || '',
+      scheduleDays: scheduleDays,
+      startTime: group.schedule?.startTime || startTime || '09:00',
+      endTime: group.schedule?.endTime || endTime || '10:30',
       price: group.price?.toString() || '',
-      maxStudents: group.maxStudents?.toString() || ''
+      maxStudents: group.maxStudents?.toString() || '',
+      room: group.room || group.schedule?.room || ''
     });
     setShowEditModal(true);
   };
@@ -360,17 +508,45 @@ const Groups = () => {
   }
 
   // Guruhlar ro'yxati
+  const handleAddClick = () => {
+    if (!limitCheck.allowed) {
+      setShowLimitModal(true);
+      return;
+    }
+    resetForm();
+    setShowAddModal(true);
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* Limit warning */}
+      {limitCheck.limit !== -1 && limitCheck.remaining <= 3 && limitCheck.remaining > 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 text-yellow-600" />
+          <p className="text-yellow-800">
+            <span className="font-medium">Limit yaqinlashmoqda!</span> {limitCheck.remaining} ta guruh qo'shish mumkin.
+          </p>
+        </div>
+      )}
+
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">
             {isTeacher ? 'Guruhlarim' : 'Guruhlar'}
           </h1>
-          <p className="text-gray-500">Jami {groups.length} ta guruh</p>
+          <p className="text-gray-500">
+            Jami {groups.length} ta guruh
+            {limitCheck.limit !== -1 && <span className="ml-2 text-sm">(limit: {limitCheck.limit})</span>}
+          </p>
         </div>
         {isAdmin && (
-          <Button icon={Plus} onClick={() => { resetForm(); setShowAddModal(true); }}>Yangi guruh</Button>
+          <Button 
+            icon={Plus} 
+            onClick={handleAddClick}
+            disabled={!limitCheck.allowed}
+          >
+            Yangi guruh
+          </Button>
         )}
       </div>
 
@@ -406,12 +582,14 @@ const Groups = () => {
               </div>
               <div className="mt-4 pt-4 border-t flex items-center justify-between">
                 <span className="font-bold text-primary-600">{formatMoney(group.price)}</span>
-                {isAdmin && (
-                  <div className="flex gap-1">
+                <div className="flex gap-1">
+                  {isAdmin && (
                     <button onClick={(e) => openEditModal(group, e)} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"><Edit className="w-4 h-4" /></button>
+                  )}
+                  {isDirector && (
                     <button onClick={(e) => { e.stopPropagation(); setSelectedGroup(group); setShowDeleteModal(true); }} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"><Trash2 className="w-4 h-4" /></button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             </Card>
           ))}
@@ -421,18 +599,52 @@ const Groups = () => {
       )}
 
       {/* Add Modal */}
-      <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title="Yangi guruh">
+      <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title="Yangi guruh" size="lg">
         <form onSubmit={handleAdd} className="space-y-4">
           <Input label="Guruh nomi" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} placeholder="Ingliz tili - Beginner" required />
           <Select label="O'qituvchi" value={formData.teacherId} onChange={(e) => setFormData({ ...formData, teacherId: e.target.value })} options={teachers.map(t => ({ value: t.id, label: `${t.fullName} (${t.subject})` }))} required />
-          <div className="grid grid-cols-2 gap-4">
-            <Input label="Dars kunlari" value={formData.days} onChange={(e) => setFormData({ ...formData, days: e.target.value })} placeholder="Du, Chor, Ju" required />
-            <Input label="Dars vaqti" value={formData.time} onChange={(e) => setFormData({ ...formData, time: e.target.value })} placeholder="09:00-10:30" required />
+          
+          {/* Dars kunlari */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Dars kunlari</label>
+            <div className="flex flex-wrap gap-2">
+              {WEEKDAYS.map(day => (
+                <button
+                  key={day.id}
+                  type="button"
+                  onClick={() => toggleDay(day.id)}
+                  className={`px-4 py-2 rounded-lg border-2 font-medium transition ${
+                    formData.scheduleDays.includes(day.id)
+                      ? 'bg-primary-500 text-white border-primary-500'
+                      : 'bg-white text-gray-700 border-gray-300 hover:border-primary-300'
+                  }`}
+                >
+                  {day.short}
+                </button>
+              ))}
+            </div>
+            {formData.scheduleDays.length > 0 && (
+              <p className="text-sm text-gray-500 mt-2">
+                Tanlangan: {formData.scheduleDays.sort((a,b) => a-b).map(d => WEEKDAYS.find(w => w.id === d)?.full).join(', ')}
+              </p>
+            )}
           </div>
+          
+          <div className="grid grid-cols-3 gap-4">
+            <Input label="Boshlanish vaqti" type="time" value={formData.startTime} onChange={(e) => setFormData({ ...formData, startTime: e.target.value })} required />
+            <Input label="Tugash vaqti" type="time" value={formData.endTime} onChange={(e) => setFormData({ ...formData, endTime: e.target.value })} required />
+            <Input label="Xona" value={formData.room} onChange={(e) => setFormData({ ...formData, room: e.target.value })} placeholder="101" />
+          </div>
+          
           <div className="grid grid-cols-2 gap-4">
             <Input label="Narxi (so'm)" type="number" value={formData.price} onChange={(e) => setFormData({ ...formData, price: e.target.value })} placeholder="850000" required />
             <Input label="Max o'quvchilar" type="number" value={formData.maxStudents} onChange={(e) => setFormData({ ...formData, maxStudents: e.target.value })} placeholder="15" required />
           </div>
+          
+          <div className="p-3 bg-blue-50 rounded-lg text-sm text-blue-700">
+            <p>📅 Tanlangan kunlar avtomatik dars jadvaliga qo'shiladi</p>
+          </div>
+          
           <div className="flex justify-end gap-2 pt-4 border-t">
             <Button type="button" variant="ghost" onClick={() => setShowAddModal(false)}>Bekor qilish</Button>
             <Button type="submit" loading={formLoading}>Yaratish</Button>
@@ -441,14 +653,38 @@ const Groups = () => {
       </Modal>
 
       {/* Edit Modal */}
-      <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title="Guruhni tahrirlash">
+      <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title="Guruhni tahrirlash" size="lg">
         <form onSubmit={handleEdit} className="space-y-4">
           <Input label="Guruh nomi" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} required />
           <Select label="O'qituvchi" value={formData.teacherId} onChange={(e) => setFormData({ ...formData, teacherId: e.target.value })} options={teachers.map(t => ({ value: t.id, label: t.fullName }))} />
-          <div className="grid grid-cols-2 gap-4">
-            <Input label="Dars kunlari" value={formData.days} onChange={(e) => setFormData({ ...formData, days: e.target.value })} />
-            <Input label="Dars vaqti" value={formData.time} onChange={(e) => setFormData({ ...formData, time: e.target.value })} />
+          
+          {/* Dars kunlari */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Dars kunlari</label>
+            <div className="flex flex-wrap gap-2">
+              {WEEKDAYS.map(day => (
+                <button
+                  key={day.id}
+                  type="button"
+                  onClick={() => toggleDay(day.id)}
+                  className={`px-4 py-2 rounded-lg border-2 font-medium transition ${
+                    formData.scheduleDays.includes(day.id)
+                      ? 'bg-primary-500 text-white border-primary-500'
+                      : 'bg-white text-gray-700 border-gray-300 hover:border-primary-300'
+                  }`}
+                >
+                  {day.short}
+                </button>
+              ))}
+            </div>
           </div>
+          
+          <div className="grid grid-cols-3 gap-4">
+            <Input label="Boshlanish vaqti" type="time" value={formData.startTime} onChange={(e) => setFormData({ ...formData, startTime: e.target.value })} />
+            <Input label="Tugash vaqti" type="time" value={formData.endTime} onChange={(e) => setFormData({ ...formData, endTime: e.target.value })} />
+            <Input label="Xona" value={formData.room} onChange={(e) => setFormData({ ...formData, room: e.target.value })} />
+          </div>
+          
           <div className="grid grid-cols-2 gap-4">
             <Input label="Narxi" type="number" value={formData.price} onChange={(e) => setFormData({ ...formData, price: e.target.value })} />
             <Input label="Max o'quvchilar" type="number" value={formData.maxStudents} onChange={(e) => setFormData({ ...formData, maxStudents: e.target.value })} />
@@ -466,6 +702,23 @@ const Groups = () => {
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setShowDeleteModal(false)}>Bekor qilish</Button>
           <Button variant="danger" loading={formLoading} onClick={handleDelete}>O'chirish</Button>
+        </div>
+      </Modal>
+
+      {/* Limit Modal */}
+      <Modal isOpen={showLimitModal} onClose={() => setShowLimitModal(false)} title="Limit tugadi">
+        <div className="text-center py-4">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <AlertTriangle className="w-8 h-8 text-red-600" />
+          </div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">Guruhlar limiti tugadi</h3>
+          <p className="text-gray-600 mb-4">
+            {SUBSCRIPTION_PLANS[subscription]?.nameUz || 'Joriy'} tarifda {limitCheck.limit} ta guruh cheklovi mavjud.
+          </p>
+          <div className="flex justify-center gap-2">
+            <Button variant="ghost" onClick={() => setShowLimitModal(false)}>Yopish</Button>
+            <Button onClick={() => window.location.href = '/settings'}>Tarifni yangilash</Button>
+          </div>
         </div>
       </Modal>
     </div>

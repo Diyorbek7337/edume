@@ -3,12 +3,13 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { 
   LayoutDashboard, Users, GraduationCap, UsersRound, UserPlus, CreditCard, 
   CalendarCheck, MessageSquare, BarChart3, Settings, LogOut, Menu, X,
-  Bell, Search, ChevronDown, FileText, Send, Shield, Calendar, Star
+  Bell, Search, ChevronDown, FileText, Send, Shield, Calendar, Star, AlertTriangle,
+  BookOpen, FileQuestion, Download, Trophy, Video, Gift, Award
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { ROLES, ROLE_NAMES } from '../../utils/constants';
 import { Avatar } from '../common';
-import { messagesAPI, teachersAPI } from '../../services/api';
+import { messagesAPI, teachersAPI, studentsAPI, paymentsAPI } from '../../services/api';
 
 const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }) => {
   const { userData, role, signOut } = useAuth();
@@ -31,9 +32,17 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
         { id: 'payments', label: "To'lovlar", icon: CreditCard, path: '/payments' },
         { id: 'attendance', label: 'Davomat', icon: CalendarCheck, path: '/attendance' },
         { id: 'grades', label: 'Baholar', icon: FileText, path: '/grades' },
+        { id: 'homework', label: 'Uy vazifalari', icon: BookOpen, path: '/homework' },
+        { id: 'quizzes', label: 'Online testlar', icon: FileQuestion, path: '/quizzes' },
+        { id: 'materials', label: 'Materiallar', icon: Video, path: '/materials' },
+        { id: 'leaderboard', label: 'Reyting', icon: Trophy, path: '/leaderboard' },
+        { id: 'rewards', label: "Sovg'alar", icon: Gift, path: '/rewards' },
+        { id: 'certificates', label: 'Sertifikatlar', icon: Award, path: '/certificates' },
+        { id: 'chat', label: 'Guruh chat', icon: Send, path: '/chat' },
+        { id: 'pdf-reports', label: 'PDF Hisobotlar', icon: Download, path: '/pdf-reports' },
         { id: 'teacher-ratings', label: "O'qituvchi baholari", icon: Star, path: '/teacher-ratings' },
         { id: 'messages', label: 'Xabarlar', icon: MessageSquare, path: '/messages', badge: unreadCount },
-        { id: 'reports', label: 'Hisobotlar', icon: BarChart3, path: '/reports' },
+        { id: 'reports', label: 'Statistika', icon: BarChart3, path: '/reports' },
       );
     }
 
@@ -48,9 +57,17 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
         { id: 'payments', label: "To'lovlar", icon: CreditCard, path: '/payments' },
         { id: 'attendance', label: 'Davomat', icon: CalendarCheck, path: '/attendance' },
         { id: 'grades', label: 'Baholar', icon: FileText, path: '/grades' },
+        { id: 'homework', label: 'Uy vazifalari', icon: BookOpen, path: '/homework' },
+        { id: 'quizzes', label: 'Online testlar', icon: FileQuestion, path: '/quizzes' },
+        { id: 'materials', label: 'Materiallar', icon: Video, path: '/materials' },
+        { id: 'leaderboard', label: 'Reyting', icon: Trophy, path: '/leaderboard' },
+        { id: 'rewards', label: "Sovg'alar", icon: Gift, path: '/rewards' },
+        { id: 'certificates', label: 'Sertifikatlar', icon: Award, path: '/certificates' },
+        { id: 'chat', label: 'Guruh chat', icon: Send, path: '/chat' },
+        { id: 'pdf-reports', label: 'PDF Hisobotlar', icon: Download, path: '/pdf-reports' },
         { id: 'teacher-ratings', label: "O'qituvchi baholari", icon: Star, path: '/teacher-ratings' },
         { id: 'messages', label: 'Xabarlar', icon: MessageSquare, path: '/messages', badge: unreadCount },
-        { id: 'reports', label: 'Hisobotlar', icon: BarChart3, path: '/reports' },
+        { id: 'reports', label: 'Statistika', icon: BarChart3, path: '/reports' },
       );
     }
 
@@ -61,6 +78,13 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
         { id: 'schedule', label: 'Dars jadvali', icon: Calendar, path: '/schedule' },
         { id: 'attendance', label: 'Davomat', icon: CalendarCheck, path: '/attendance' },
         { id: 'grades', label: 'Baholar', icon: FileText, path: '/grades' },
+        { id: 'homework', label: 'Uy vazifalari', icon: BookOpen, path: '/homework' },
+        { id: 'quizzes', label: 'Online testlar', icon: FileQuestion, path: '/quizzes' },
+        { id: 'materials', label: 'Materiallar', icon: Video, path: '/materials' },
+        { id: 'leaderboard', label: 'Reyting', icon: Trophy, path: '/leaderboard' },
+        { id: 'certificates', label: 'Sertifikatlar', icon: Award, path: '/certificates' },
+        { id: 'chat', label: 'Guruh chat', icon: Send, path: '/chat' },
+        { id: 'pdf-reports', label: 'PDF Hisobotlar', icon: Download, path: '/pdf-reports' },
         { id: 'payments', label: "To'lovlar", icon: CreditCard, path: '/payments' },
         { id: 'messages', label: 'Xabarlar', icon: MessageSquare, path: '/messages', badge: unreadCount },
       );
@@ -71,6 +95,13 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
       items.push(
         { id: 'grades', label: 'Baholarim', icon: FileText, path: '/grades' },
         { id: 'attendance', label: 'Davomatim', icon: CalendarCheck, path: '/attendance' },
+        { id: 'homework', label: 'Uy vazifalari', icon: BookOpen, path: '/homework' },
+        { id: 'quizzes', label: 'Online testlar', icon: FileQuestion, path: '/quizzes' },
+        { id: 'materials', label: 'Materiallar', icon: Video, path: '/materials' },
+        { id: 'leaderboard', label: 'Reyting', icon: Trophy, path: '/leaderboard' },
+        { id: 'rewards', label: "Sovg'alar", icon: Gift, path: '/rewards' },
+        { id: 'certificates', label: 'Sertifikatlarim', icon: Award, path: '/certificates' },
+        { id: 'chat', label: 'Guruh chat', icon: Send, path: '/chat' },
         { id: 'schedule', label: 'Dars jadvali', icon: Calendar, path: '/schedule' },
         { id: 'payments', label: "To'lovlarim", icon: CreditCard, path: '/payments' },
         { id: 'teacher-ratings', label: "O'qituvchini baholash", icon: Star, path: '/teacher-ratings' },
@@ -91,14 +122,14 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
   const sidebarContent = (
     <>
       {/* Logo */}
-      <div className="flex items-center justify-between h-16 px-4 border-b border-gray-200">
+      <div className="h-16 flex items-center justify-between px-4 border-b border-gray-200">
         <div className="flex items-center gap-3">
-          <div className="flex items-center justify-center w-10 h-10 bg-primary-600 rounded-xl">
+          <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center">
             <GraduationCap className="w-6 h-6 text-white" />
           </div>
-          {!collapsed && <span className="text-xl font-bold text-gray-900">EduCenter</span>}
+          {!collapsed && <span className="font-bold text-xl text-gray-900">EduCenter</span>}
         </div>
-        <button onClick={onMobileClose || onToggle} className="p-2 text-gray-500 rounded-lg lg:hidden hover:bg-gray-100">
+        <button onClick={onMobileClose || onToggle} className="lg:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-lg">
           <X className="w-5 h-5" />
         </button>
       </div>
@@ -116,8 +147,8 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
               ${collapsed ? 'justify-center' : ''}
             `}
           >
-            <item.icon className="flex-shrink-0 w-5 h-5" />
-            {!collapsed && <span className="flex-1 font-medium">{item.label}</span>}
+            <item.icon className="w-5 h-5 flex-shrink-0" />
+            {!collapsed && <span className="font-medium flex-1">{item.label}</span>}
             {item.badge > 0 && (
               <span className={`
                 absolute ${collapsed ? 'top-0 right-0' : 'right-3'}
@@ -172,7 +203,7 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
               <p className="text-xs text-gray-500">{ROLE_NAMES[role]}</p>
             </div>
           )}
-          <button onClick={handleSignOut} className="p-2 text-gray-400 rounded-lg hover:text-red-500 hover:bg-red-50" title="Chiqish">
+          <button onClick={handleSignOut} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg" title="Chiqish">
             <LogOut className="w-4 h-4" />
           </button>
         </div>
@@ -190,8 +221,8 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
       {/* Mobile Sidebar */}
       {mobileOpen && (
         <>
-          <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={onMobileClose} />
-          <aside className="fixed top-0 left-0 z-50 flex flex-col w-64 h-screen bg-white border-r border-gray-200 lg:hidden">
+          <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={onMobileClose} />
+          <aside className="fixed left-0 top-0 h-screen w-64 bg-white border-r border-gray-200 z-50 lg:hidden flex flex-col">
             {sidebarContent}
           </aside>
         </>
@@ -205,9 +236,9 @@ const Header = ({ onMenuClick, unreadCount }) => {
   const navigate = useNavigate();
 
   return (
-    <header className="flex items-center justify-between h-16 px-4 bg-white border-b border-gray-200 lg:px-6">
+    <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 lg:px-6">
       <div className="flex items-center gap-4">
-        <button onClick={onMenuClick} className="p-2 text-gray-500 rounded-lg hover:bg-gray-100 lg:hidden">
+        <button onClick={onMenuClick} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg lg:hidden">
           <Menu className="w-5 h-5" />
         </button>
         
@@ -224,11 +255,11 @@ const Header = ({ onMenuClick, unreadCount }) => {
         )}
         
         <div className="relative hidden md:block">
-          <Search className="absolute w-4 h-4 text-gray-400 -translate-y-1/2 left-3 top-1/2" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             type="text"
             placeholder="Qidirish..."
-            className="w-64 py-2 pl-10 pr-4 text-sm border border-gray-200 rounded-lg bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500"
+            className="pl-10 pr-4 py-2 w-64 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
           />
         </div>
       </div>
@@ -237,11 +268,11 @@ const Header = ({ onMenuClick, unreadCount }) => {
         {/* Notifications */}
         <button 
           onClick={() => navigate('/messages')}
-          className="relative p-2 text-gray-500 rounded-lg hover:bg-gray-100"
+          className="relative p-2 text-gray-500 hover:bg-gray-100 rounded-lg"
         >
           <Bell className="w-5 h-5" />
           {unreadCount > 0 && (
-            <span className="absolute flex items-center justify-center w-5 h-5 text-xs font-bold text-white bg-red-500 rounded-full -top-1 -right-1">
+            <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs font-bold rounded-full flex items-center justify-center">
               {unreadCount > 9 ? '9+' : unreadCount}
             </span>
           )}
@@ -259,9 +290,113 @@ const Header = ({ onMenuClick, unreadCount }) => {
 
 const DashboardLayout = () => {
   const { userData, role } = useAuth();
+  const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [paymentAlert, setPaymentAlert] = useState(null); // To'lov ogohlantirishlari
+  const [alertDismissed, setAlertDismissed] = useState(false);
+
+  // To'lov holatini tekshirish (O'quvchi va Ota-ona uchun)
+  useEffect(() => {
+    const checkPaymentStatus = async () => {
+      if (!userData?.id || (role !== ROLES.STUDENT && role !== ROLES.PARENT)) return;
+      if (alertDismissed) return;
+      
+      try {
+        const students = await studentsAPI.getAll();
+        const payments = await paymentsAPI.getAll();
+        
+        // Foydalanuvchiga tegishli o'quvchilarni topish
+        const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
+        const userPhone = normalizePhone(userData?.phone);
+        const userEmail = userData?.email?.toLowerCase();
+        
+        let myStudents = [];
+        
+        if (role === ROLES.PARENT) {
+          const childIds = userData?.childIds || (userData?.childId ? [userData.childId] : []);
+          myStudents = students.filter(s => {
+            const studentParentPhone = normalizePhone(s.parentPhone);
+            return s.parentPhone === userData?.phone ||
+                   studentParentPhone === userPhone ||
+                   childIds.includes(s.id);
+          });
+        } else {
+          // O'quvchi
+          const student = students.find(s => {
+            const studentPhone = normalizePhone(s.phone);
+            const studentEmail = s.email?.toLowerCase();
+            return studentEmail === userEmail ||
+                   s.phone === userData?.phone ||
+                   studentPhone === userPhone;
+          });
+          if (student) myStudents = [student];
+        }
+        
+        if (myStudents.length === 0) return;
+        
+        const now = new Date();
+        const currentMonth = now.getMonth();
+        const currentYear = now.getFullYear();
+        const lastMonth = currentMonth === 0 ? 11 : currentMonth - 1;
+        const lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+        
+        // To'lov holatini tekshirish
+        const hasPaymentForMonth = (studentId, year, month) => {
+          const monthStr = `${year}-${String(month + 1).padStart(2, '0')}`;
+          return payments.some(p => 
+            p.studentId === studentId && 
+            p.status === 'paid' && 
+            p.month === monthStr
+          );
+        };
+        
+        let hasDebt = false;
+        let hasPending = false;
+        let debtStudents = [];
+        let pendingStudents = [];
+        
+        for (const student of myStudents) {
+          const startDate = student.startDate ? new Date(student.startDate) : null;
+          const startedThisMonth = startDate && 
+            startDate.getMonth() === currentMonth && 
+            startDate.getFullYear() === currentYear;
+          
+          const hasPaidCurrent = hasPaymentForMonth(student.id, currentYear, currentMonth);
+          const hasPaidLast = hasPaymentForMonth(student.id, lastMonthYear, lastMonth);
+          
+          if (!hasPaidCurrent) {
+            if (!startedThisMonth && !hasPaidLast) {
+              hasDebt = true;
+              debtStudents.push(student.fullName);
+            } else if (!startedThisMonth) {
+              hasPending = true;
+              pendingStudents.push(student.fullName);
+            }
+          }
+        }
+        
+        if (hasDebt) {
+          setPaymentAlert({
+            type: 'danger',
+            message: `⚠️ Qarzdorlik mavjud! ${debtStudents.join(', ')} uchun to'lov qilish kerak.`,
+            action: () => navigate('/payments')
+          });
+        } else if (hasPending) {
+          setPaymentAlert({
+            type: 'warning',
+            message: `💰 Bu oy uchun to'lov qilish vaqti keldi: ${pendingStudents.join(', ')}`,
+            action: () => navigate('/payments')
+          });
+        }
+      } catch (err) {
+        console.error('Payment check error:', err);
+      }
+    };
+    
+    checkPaymentStatus();
+  }, [userData, role, alertDismissed, navigate]);
 
   // Xabarlarni tekshirish
   useEffect(() => {
@@ -337,6 +472,45 @@ const DashboardLayout = () => {
           onMenuClick={() => setMobileOpen(true)} 
           unreadCount={unreadCount}
         />
+        
+        {/* To'lov ogohlantirishlari */}
+        {paymentAlert && !alertDismissed && (
+          <div className={`mx-4 lg:mx-6 mt-4 p-4 rounded-lg flex items-center justify-between ${
+            paymentAlert.type === 'danger' 
+              ? 'bg-red-50 border border-red-200' 
+              : 'bg-yellow-50 border border-yellow-200'
+          }`}>
+            <div className="flex items-center gap-3">
+              <AlertTriangle className={`w-5 h-5 ${
+                paymentAlert.type === 'danger' ? 'text-red-500' : 'text-yellow-500'
+              }`} />
+              <span className={`font-medium ${
+                paymentAlert.type === 'danger' ? 'text-red-700' : 'text-yellow-700'
+              }`}>
+                {paymentAlert.message}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={paymentAlert.action}
+                className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                  paymentAlert.type === 'danger'
+                    ? 'bg-red-500 text-white hover:bg-red-600'
+                    : 'bg-yellow-500 text-white hover:bg-yellow-600'
+                }`}
+              >
+                To'lovga o'tish
+              </button>
+              <button
+                onClick={() => setAlertDismissed(true)}
+                className="p-2 text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        )}
+        
         <main className="p-4 lg:p-6">
           <Outlet />
         </main>

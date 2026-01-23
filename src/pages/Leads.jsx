@@ -40,8 +40,8 @@ const Leads = () => {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   
   const [selectedLead, setSelectedLead] = useState(null);
-  const [formData, setFormData] = useState({ fullName: '', phone: '', source: '', note: '' });
-  const [convertData, setConvertData] = useState({ groupId: '', parentName: '', parentPhone: '' });
+  const [formData, setFormData] = useState({ fullName: '', phone: '', source: '', note: '', subject: '', address: '', parentTelegram: '' });
+  const [convertData, setConvertData] = useState({ groupId: '', parentName: '', parentPhone: '', address: '', parentTelegram: '' });
   const [trialData, setTrialData] = useState({ groupId: '', trialDate: '', trialTime: '' });
   const [lostReason, setLostReason] = useState('');
   const [contactNote, setContactNote] = useState('');
@@ -127,9 +127,15 @@ const Leads = () => {
     setFormLoading(true);
     try {
       const group = groups.find(g => g.id === convertData.groupId);
+      const cleanPhone = selectedLead.phone.replace(/\D/g, '');
+      const parentCleanPhone = convertData.parentPhone?.replace(/\D/g, '') || cleanPhone;
+      
+      // Telegram ni aniqlash (telefon yoki username)
+      const studentTelegram = cleanPhone;
+      const parentTelegram = convertData.parentTelegram || parentCleanPhone;
       
       // 1. O'quvchi yaratish
-      const studentEmail = `${selectedLead.phone.replace(/\D/g, '')}@student.edu`;
+      const studentEmail = `student${cleanPhone}@edu.local`;
       const defaultPassword = 'student123';
       
       // Firebase Auth yaratish
@@ -137,36 +143,46 @@ const Leads = () => {
         fullName: selectedLead.fullName,
         email: studentEmail,
         phone: selectedLead.phone,
+        telegram: studentTelegram,
         role: ROLES.STUDENT
       }, defaultPassword);
       
       // Students kolleksiyasiga qo'shish
-      await studentsAPI.create({
+      const newStudent = await studentsAPI.create({
         fullName: selectedLead.fullName,
         phone: selectedLead.phone,
         email: studentEmail,
+        telegram: studentTelegram,
         groupId: convertData.groupId,
         groupName: group?.name || '',
         parentName: convertData.parentName,
-        parentPhone: convertData.parentPhone,
+        parentPhone: convertData.parentPhone || selectedLead.phone,
+        parentTelegram: parentTelegram,
+        address: convertData.address || '',
+        subject: selectedLead.subject || '', // Liddan fan
+        startDate: new Date().toISOString().split('T')[0],
+        paymentType: 'prorated',
         status: 'active',
         mustChangePassword: true
       });
       
       // Agar ota-ona telefoni bo'lsa, ota-ona akkaunti yaratish
-      if (convertData.parentPhone) {
-        const parentEmail = `${convertData.parentPhone.replace(/\D/g, '')}@parent.edu`;
-        try {
-          await usersAPI.create({
-            fullName: convertData.parentName || `${selectedLead.fullName} (ota-ona)`,
-            email: parentEmail,
-            phone: convertData.parentPhone,
-            role: ROLES.PARENT,
-            childName: selectedLead.fullName
-          }, 'parent123');
-        } catch (err) {
-          console.log('Parent already exists or error:', err);
-        }
+      const parentPhone = convertData.parentPhone || selectedLead.phone;
+      const parentEmail = `parent${parentCleanPhone}@edu.local`;
+      try {
+        await usersAPI.create({
+          fullName: convertData.parentName || `${selectedLead.fullName} (ota-ona)`,
+          email: parentEmail,
+          phone: parentPhone,
+          telegram: parentTelegram,
+          role: ROLES.PARENT,
+          childName: selectedLead.fullName,
+          childId: newStudent.id,
+          childIds: [newStudent.id],
+          childNames: [selectedLead.fullName]
+        }, 'parent123');
+      } catch (err) {
+        console.log('Parent already exists or error:', err);
       }
       
       // Guruh studentsCount yangilash
@@ -190,7 +206,7 @@ const Leads = () => {
       
       setShowConvertModal(false);
       resetForm();
-      alert(`O'quvchi yaratildi!\n\nLogin: ${studentEmail}\nParol: student123\n\nOta-ona:\nLogin: ${convertData.parentPhone.replace(/\D/g, '')}@parent.edu\nParol: parent123`);
+      alert(`✅ O'quvchi yaratildi!\n\n📚 O'quvchi:\nLogin: ${studentEmail}\nParol: student123\nTelegram: ${studentTelegram}\n\n👨‍👩‍👧 Ota-ona:\nLogin: ${parentEmail}\nParol: parent123\nTelegram: ${parentTelegram}`);
     } catch (err) { 
       console.error(err);
       alert("Xatolik yuz berdi: " + err.message); 
@@ -402,13 +418,30 @@ const Leads = () => {
         <form onSubmit={handleAdd} className="space-y-4">
           <Input label="To'liq ismi" value={formData.fullName} onChange={(e) => setFormData({ ...formData, fullName: e.target.value })} required />
           <Input label="Telefon" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} placeholder="+998901234567" required />
-          <Select label="Manba" value={formData.source} onChange={(e) => setFormData({ ...formData, source: e.target.value })} options={[
-            { value: 'instagram', label: 'Instagram' },
-            { value: 'telegram', label: 'Telegram' },
-            { value: 'referral', label: 'Tavsiya' },
-            { value: 'google', label: 'Google' },
-            { value: 'other', label: 'Boshqa' },
-          ]} />
+          <div className="grid grid-cols-2 gap-4">
+            <Select label="Qiziqtirgan fan" value={formData.subject} onChange={(e) => setFormData({ ...formData, subject: e.target.value })} options={[
+              { value: '', label: 'Tanlang...' },
+              { value: 'english', label: 'Ingliz tili' },
+              { value: 'russian', label: 'Rus tili' },
+              { value: 'math', label: 'Matematika' },
+              { value: 'physics', label: 'Fizika' },
+              { value: 'chemistry', label: 'Kimyo' },
+              { value: 'biology', label: 'Biologiya' },
+              { value: 'programming', label: 'Dasturlash' },
+              { value: 'arabic', label: 'Arab tili' },
+              { value: 'korean', label: 'Koreys tili' },
+              { value: 'other', label: 'Boshqa' },
+            ]} />
+            <Select label="Manba" value={formData.source} onChange={(e) => setFormData({ ...formData, source: e.target.value })} options={[
+              { value: '', label: 'Tanlang...' },
+              { value: 'instagram', label: 'Instagram' },
+              { value: 'telegram', label: 'Telegram' },
+              { value: 'referral', label: 'Tavsiya' },
+              { value: 'google', label: 'Google' },
+              { value: 'banner', label: 'Banner/Reklama' },
+              { value: 'other', label: 'Boshqa' },
+            ]} />
+          </div>
           <Textarea label="Izoh" value={formData.note} onChange={(e) => setFormData({ ...formData, note: e.target.value })} rows={3} />
           <div className="flex justify-end gap-2 pt-4 border-t">
             <Button type="button" variant="ghost" onClick={() => setShowAddModal(false)}>Bekor qilish</Button>
@@ -444,6 +477,17 @@ const Leads = () => {
               value={convertData.parentPhone} 
               onChange={(e) => setConvertData({ ...convertData, parentPhone: e.target.value })} 
               placeholder="+998901234567"
+            />
+            <Input 
+              label="Ota-ona Telegram" 
+              value={convertData.parentTelegram} 
+              onChange={(e) => setConvertData({ ...convertData, parentTelegram: e.target.value })} 
+              placeholder="998901234567 yoki username"
+            />
+            <Input 
+              label="Manzil" 
+              value={convertData.address} 
+              onChange={(e) => setConvertData({ ...convertData, address: e.target.value })} 
             />
           </div>
           

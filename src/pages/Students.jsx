@@ -1,17 +1,20 @@
-import { useState, useEffect } from 'react';
-import { Search, Plus, Edit, Trash2, Eye, Download, Copy, Check, Gift } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Search, Plus, Edit, Trash2, Eye, Download, Upload, Copy, Check, Gift, AlertTriangle, FileSpreadsheet } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Avatar, Table, Modal, Loading, EmptyState } from '../components/common';
 import { studentsAPI, groupsAPI, usersAPI, settingsAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
 import { formatPhone, formatMoney } from '../utils/helpers';
+import { checkLimit, getLimitMessage, SUBSCRIPTION_PLANS } from '../utils/subscriptions';
 import { toast } from 'react-toastify';
+import * as XLSX from 'xlsx';
 
 const Students = () => {
-  const { userData, role } = useAuth();
+  const { userData, role, centerData } = useAuth();
   const [students, setStudents] = useState([]);
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
+  const fileInputRef = useRef(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterGroup, setFilterGroup] = useState('');
   
@@ -20,11 +23,20 @@ const Students = () => {
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showCredentialsModal, setShowCredentialsModal] = useState(false);
+  const [showLimitModal, setShowLimitModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importData, setImportData] = useState([]);
+  const [importLoading, setImportLoading] = useState(false);
   
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [formData, setFormData] = useState({ 
     fullName: '', phone: '', email: '', groupId: '', 
-    parentName: '', parentPhone: '', parentTelegram: '', address: '' 
+    parentName: '', parentPhone: '', parentTelegram: '', address: '',
+    startDate: new Date().toISOString().split('T')[0], // Bugungi sana
+    paymentType: 'prorated', // Default proporsional
+    paymentDay: '1',
+    referredBy: '',
+    discount: '0'
   });
   const [credentials, setCredentials] = useState({ studentEmail: '', studentPassword: '', parentEmail: '', parentPassword: '' });
   const [formLoading, setFormLoading] = useState(false);
@@ -33,6 +45,11 @@ const Students = () => {
 
   const isTeacher = role === ROLES.TEACHER;
   const isAdmin = role === ROLES.ADMIN || role === ROLES.DIRECTOR;
+  const isDirector = role === ROLES.DIRECTOR; // Faqat direktor o'chira oladi
+  
+  // Subscription limit
+  const subscription = centerData?.subscription || 'trial';
+  const limitCheck = checkLimit(subscription, 'students', students.length);
 
   useEffect(() => { fetchData(); }, []);
 
@@ -151,61 +168,78 @@ const Students = () => {
       
       // 3. Ota-ona akkaunti yaratish yoki yangilash
       let parentEmail = '';
-      let parentPassword = 'parent123';
+      let parentPassword = 'parent123'; // Default parol
+      let isExistingParent = false;
       
       if (formData.parentPhone) {
-        parentEmail = `${formData.parentPhone.replace(/\D/g, '')}@parent.edu`;
-        try {
-          // Avval mavjud ota-onani tekshirish
-          const existingUsers = await usersAPI.getAll();
-          const existingParent = existingUsers.find(u => 
-            u.email === parentEmail || 
-            u.phone === formData.parentPhone ||
-            u.phone?.replace(/\D/g, '') === formData.parentPhone.replace(/\D/g, '')
-          );
+        // Telefon raqamdan faqat raqamlarni olish va email yaratish
+        const cleanPhone = formData.parentPhone.replace(/\D/g, '');
+        if (cleanPhone.length >= 9) {
+          parentEmail = `parent${cleanPhone}@edu.local`;
           
-          if (existingParent) {
-            // Mavjud ota-onaga yangi farzand qo'shish
-            const childIds = existingParent.childIds || [];
-            if (existingParent.childId && !childIds.includes(existingParent.childId)) {
-              childIds.push(existingParent.childId);
-            }
-            if (!childIds.includes(newStudent.id)) {
-              childIds.push(newStudent.id);
-            }
+          try {
+            // Avval mavjud ota-onani tekshirish
+            const existingUsers = await usersAPI.getAll();
+            const existingParent = existingUsers.find(u => 
+              u.email === parentEmail || 
+              u.phone === formData.parentPhone ||
+              u.phone?.replace(/\D/g, '') === cleanPhone
+            );
             
-            const childNames = existingParent.childNames || [];
-            if (existingParent.childName && !childNames.includes(existingParent.childName)) {
-              childNames.push(existingParent.childName);
+            if (existingParent) {
+              // Mavjud ota-onaga yangi farzand qo'shish
+              isExistingParent = true;
+              const childIds = existingParent.childIds || [];
+              if (existingParent.childId && !childIds.includes(existingParent.childId)) {
+                childIds.push(existingParent.childId);
+              }
+              if (!childIds.includes(newStudent.id)) {
+                childIds.push(newStudent.id);
+              }
+              
+              const childNames = existingParent.childNames || [];
+              if (existingParent.childName && !childNames.includes(existingParent.childName)) {
+                childNames.push(existingParent.childName);
+              }
+              if (!childNames.includes(formData.fullName)) {
+                childNames.push(formData.fullName);
+              }
+              
+              await usersAPI.update(existingParent.id, { 
+                childIds, 
+                childNames,
+                childId: childIds[0],
+                childName: childNames[0]
+              });
+              parentEmail = existingParent.email;
+              parentPassword = '(mavjud parol)';
+            } else {
+              // Yangi ota-ona yaratish
+              try {
+                await usersAPI.create({
+                  fullName: formData.parentName || `${formData.fullName} (ota-ona)`,
+                  email: parentEmail,
+                  phone: formData.parentPhone,
+                  telegram: formData.parentTelegram || '',
+                  role: ROLES.PARENT,
+                  childName: formData.fullName,
+                  childId: newStudent.id,
+                  childIds: [newStudent.id],
+                  childNames: [formData.fullName]
+                }, parentPassword);
+              } catch (createErr) {
+                console.error('Parent create error:', createErr);
+                // Ota-ona yaratilmasa ham o'quvchi qo'shildi
+                parentEmail = '';
+                parentPassword = '';
+              }
             }
-            if (!childNames.includes(formData.fullName)) {
-              childNames.push(formData.fullName);
+          } catch (err) {
+            console.error('Parent check error:', err);
+            if (err.code === 'auth/email-already-in-use') {
+              isExistingParent = true;
+              parentPassword = '(mavjud parol)';
             }
-            
-            await usersAPI.update(existingParent.id, { 
-              childIds, 
-              childNames,
-              childId: childIds[0], // Eski format uchun
-              childName: childNames[0]
-            });
-            parentEmail = existingParent.email;
-          } else {
-            // Yangi ota-ona yaratish
-            await usersAPI.create({
-              fullName: formData.parentName || `${formData.fullName} (ota-ona)`,
-              email: parentEmail,
-              phone: formData.parentPhone,
-              telegram: formData.parentTelegram,
-              role: ROLES.PARENT,
-              childName: formData.fullName,
-              childId: newStudent.id,
-              childIds: [newStudent.id],
-              childNames: [formData.fullName]
-            }, parentPassword);
-          }
-        } catch (err) {
-          if (err.code !== 'auth/email-already-in-use') {
-            console.error('Parent creation error:', err);
           }
         }
       }
@@ -332,31 +366,239 @@ const Students = () => {
     setTimeout(() => setCopied(''), 2000);
   };
 
-  const exportToCSV = () => {
-    const headers = ["Ism", "Telefon", "Email", "Guruh", "Ota-ona", "Ota-ona tel", "Telegram"];
-    const rows = filteredStudents.map(s => [s.fullName, s.phone, s.email, s.groupName, s.parentName, s.parentPhone, s.parentTelegram]);
-    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a'); 
-    link.href = URL.createObjectURL(blob); 
-    link.download = 'students.csv'; 
-    link.click();
+  // Excel export
+  const exportToExcel = () => {
+    const data = filteredStudents.map(s => ({
+      'Ism familiya': s.fullName || '',
+      'Telefon': s.phone || '',
+      'Email': s.email || '',
+      'Guruh': s.groupName || '',
+      'Ota-ona ismi': s.parentName || '',
+      'Ota-ona telefoni': s.parentPhone || '',
+      'Telegram': s.parentTelegram || '',
+      'Manzil': s.address || '',
+    }));
+    
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "O'quvchilar");
+    
+    // Column widths
+    ws['!cols'] = [
+      { wch: 25 }, { wch: 15 }, { wch: 25 }, { wch: 20 },
+      { wch: 25 }, { wch: 15 }, { wch: 15 }, { wch: 30 }
+    ];
+    
+    XLSX.writeFile(wb, `oqvuchilar_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Excel fayl yuklandi");
+  };
+
+  // Download template
+  const downloadTemplate = () => {
+    const template = [
+      {
+        'Ism familiya': 'Misol: Aliyev Ali',
+        'Telefon': '+998901234567',
+        'Guruh': groups[0]?.name || 'Guruh nomi',
+        'Ota-ona ismi': 'Ota-ona ismi',
+        'Ota-ona telefoni': '+998901234568',
+        'Telegram': 'telegram_username',
+        'Manzil': 'Toshkent sh.',
+      }
+    ];
+    
+    const ws = XLSX.utils.json_to_sheet(template);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Shablon");
+    
+    ws['!cols'] = [
+      { wch: 25 }, { wch: 15 }, { wch: 20 },
+      { wch: 25 }, { wch: 15 }, { wch: 15 }, { wch: 30 }
+    ];
+    
+    XLSX.writeFile(wb, 'oquvchilar_shablon.xlsx');
+    toast.info("Shablon yuklandi. To'ldiring va yuklang.");
+  };
+
+  // Handle file upload
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const wb = XLSX.read(evt.target.result, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const data = XLSX.utils.sheet_to_json(ws);
+        
+        // Ma'lumotlarni formatlash
+        const formattedData = data.map((row, index) => ({
+          id: index + 1,
+          fullName: row['Ism familiya'] || row['fullName'] || row['Ism'] || '',
+          phone: row['Telefon'] || row['phone'] || '',
+          groupName: row['Guruh'] || row['group'] || '',
+          parentName: row['Ota-ona ismi'] || row['parentName'] || '',
+          parentPhone: row['Ota-ona telefoni'] || row['parentPhone'] || '',
+          parentTelegram: row['Telegram'] || row['telegram'] || '',
+          address: row['Manzil'] || row['address'] || '',
+        })).filter(row => row.fullName); // Ism bo'lmasa o'tkazib yuborish
+        
+        if (formattedData.length === 0) {
+          toast.error("Faylda ma'lumot topilmadi");
+          return;
+        }
+        
+        // Limit tekshirish
+        const newTotal = students.length + formattedData.length;
+        if (limitCheck.limit !== -1 && newTotal > limitCheck.limit) {
+          toast.error(`Limit: ${limitCheck.limit}. Joriy: ${students.length}. Qo'shmoqchi: ${formattedData.length}. Ruxsat yo'q!`);
+          return;
+        }
+        
+        setImportData(formattedData);
+        setShowImportModal(true);
+      } catch (err) {
+        console.error('Excel parsing error:', err);
+        toast.error("Faylni o'qishda xatolik");
+      }
+    };
+    reader.readAsBinaryString(file);
+    e.target.value = ''; // Reset input
+  };
+
+  // Import students
+  const handleImport = async () => {
+    if (importData.length === 0) return;
+    
+    setImportLoading(true);
+    let successCount = 0;
+    let errorCount = 0;
+    
+    try {
+      for (const row of importData) {
+        try {
+          // Guruh topish
+          const group = groups.find(g => 
+            g.name?.toLowerCase() === row.groupName?.toLowerCase()
+          );
+          
+          // O'quvchi yaratish
+          const studentData = {
+            fullName: row.fullName,
+            phone: row.phone,
+            email: row.phone ? `${row.phone.replace(/\D/g, '')}@student.edu` : '',
+            groupId: group?.id || '',
+            groupName: group?.name || row.groupName || '',
+            parentName: row.parentName,
+            parentPhone: row.parentPhone,
+            parentTelegram: row.parentTelegram,
+            address: row.address,
+            status: 'active',
+          };
+          
+          await studentsAPI.create(studentData);
+          successCount++;
+        } catch (err) {
+          console.error('Import row error:', err);
+          errorCount++;
+        }
+      }
+      
+      toast.success(`${successCount} ta o'quvchi qo'shildi${errorCount > 0 ? `, ${errorCount} ta xatolik` : ''}`);
+      setShowImportModal(false);
+      setImportData([]);
+      fetchData();
+    } catch (err) {
+      console.error('Import error:', err);
+      toast.error("Import xatoligi");
+    }
+    setImportLoading(false);
   };
 
   if (loading) return <Loading fullScreen text="Yuklanmoqda..." />;
 
+  // Handle add button click with limit check
+  const handleAddClick = () => {
+    if (!limitCheck.allowed) {
+      setShowLimitModal(true);
+      return;
+    }
+    resetForm();
+    setShowAddModal(true);
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* Limit warning banner */}
+      {limitCheck.limit !== -1 && limitCheck.remaining <= 5 && limitCheck.remaining > 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 text-yellow-600" />
+          <div>
+            <p className="font-medium text-yellow-800">Limit yaqinlashmoqda!</p>
+            <p className="text-sm text-yellow-600">
+              {limitCheck.remaining} ta o'quvchi qo'shish mumkin. Limitni oshirish uchun tarifni yangilang.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{isTeacher ? "O'quvchilarim" : "O'quvchilar"}</h1>
-          <p className="text-gray-500">Jami {students.length} ta o'quvchi</p>
+          <p className="text-gray-500">
+            Jami {students.length} ta o'quvchi
+            {limitCheck.limit !== -1 && (
+              <span className="ml-2 text-sm">
+                (limit: {limitCheck.limit})
+              </span>
+            )}
+          </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           {isAdmin && (
             <>
-              <Button variant="outline" icon={Download} onClick={exportToCSV}>Export</Button>
-              <Button icon={Plus} onClick={() => { resetForm(); setShowAddModal(true); }}>Yangi o'quvchi</Button>
+              {/* Hidden file input */}
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileUpload}
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+              />
+              <Button 
+                variant="outline" 
+                icon={FileSpreadsheet} 
+                onClick={downloadTemplate}
+                title="Shablon yuklash"
+              >
+                Shablon
+              </Button>
+              <Button 
+                variant="outline" 
+                icon={Upload} 
+                onClick={() => fileInputRef.current?.click()}
+                title="Excel dan import"
+              >
+                Import
+              </Button>
+              <Button 
+                variant="outline" 
+                icon={Download} 
+                onClick={exportToExcel}
+                title="Excel ga eksport"
+              >
+                Export
+              </Button>
+              <Button 
+                icon={Plus} 
+                onClick={handleAddClick}
+                disabled={!limitCheck.allowed}
+                className={!limitCheck.allowed ? 'opacity-50 cursor-not-allowed' : ''}
+              >
+                Yangi o'quvchi
+              </Button>
             </>
           )}
         </div>
@@ -401,16 +643,28 @@ const Students = () => {
                   <Table.Cell>
                     <p className="text-sm">{student.parentName}</p>
                     <a href={`tel:${student.parentPhone}`} className="text-sm text-primary-600">{formatPhone(student.parentPhone)}</a>
-                    {student.parentTelegram && <p className="text-xs text-blue-500">@{student.parentTelegram}</p>}
+                    {student.parentTelegram && (
+                      <a 
+                        href={student.parentTelegram.match(/^\d+$/) 
+                          ? `https://t.me/+${student.parentTelegram}` 
+                          : `https://t.me/${student.parentTelegram.replace('@', '')}`
+                        } 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-500 hover:underline"
+                      >
+                        📱 Telegram
+                      </a>
+                    )}
                   </Table.Cell>
                   <Table.Cell className="text-right">
                     <div className="flex justify-end gap-1">
                       <button onClick={() => { setSelectedStudent(student); setShowViewModal(true); }} className="p-2 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg"><Eye className="w-4 h-4" /></button>
                       {isAdmin && (
-                        <>
-                          <button onClick={() => openEditModal(student)} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"><Edit className="w-4 h-4" /></button>
-                          <button onClick={() => { setSelectedStudent(student); setShowDeleteModal(true); }} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"><Trash2 className="w-4 h-4" /></button>
-                        </>
+                        <button onClick={() => openEditModal(student)} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"><Edit className="w-4 h-4" /></button>
+                      )}
+                      {isDirector && (
+                        <button onClick={() => { setSelectedStudent(student); setShowDeleteModal(true); }} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"><Trash2 className="w-4 h-4" /></button>
                       )}
                     </div>
                   </Table.Cell>
@@ -509,7 +763,7 @@ const Students = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Input label="Ota-ona ismi" value={formData.parentName} onChange={(e) => setFormData({ ...formData, parentName: e.target.value })} />
             <Input label="Ota-ona telefoni" value={formData.parentPhone} onChange={(e) => setFormData({ ...formData, parentPhone: e.target.value })} placeholder="+998901234567" />
-            <Input label="Telegram username" value={formData.parentTelegram} onChange={(e) => setFormData({ ...formData, parentTelegram: e.target.value })} placeholder="username (@ siz)" />
+            <Input label="Telegram (telefon yoki username)" value={formData.parentTelegram} onChange={(e) => setFormData({ ...formData, parentTelegram: e.target.value })} placeholder="998901234567 yoki username" />
           </div>
           
           <div className="flex justify-end gap-2 pt-4 border-t">
@@ -601,7 +855,20 @@ const Students = () => {
               <div className="p-3 bg-gray-50 rounded-lg"><p className="text-sm text-gray-500">Ota-ona</p><p className="font-medium">{selectedStudent.parentName || '-'}</p></div>
               <div className="p-3 bg-gray-50 rounded-lg"><p className="text-sm text-gray-500">Ota-ona tel</p><p className="font-medium">{formatPhone(selectedStudent.parentPhone)}</p></div>
               {selectedStudent.parentTelegram && (
-                <div className="p-3 bg-gray-50 rounded-lg"><p className="text-sm text-gray-500">Telegram</p><p className="font-medium text-blue-600">@{selectedStudent.parentTelegram}</p></div>
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <p className="text-sm text-gray-500">Telegram</p>
+                  <a 
+                    href={selectedStudent.parentTelegram.match(/^\d+$/) 
+                      ? `https://t.me/+${selectedStudent.parentTelegram}` 
+                      : `https://t.me/${selectedStudent.parentTelegram.replace('@', '')}`
+                    } 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="font-medium text-blue-600 hover:underline"
+                  >
+                    📱 Telegram ochish
+                  </a>
+                </div>
               )}
             </div>
             <div className="flex justify-end gap-2 pt-4 border-t">
@@ -618,6 +885,154 @@ const Students = () => {
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setShowDeleteModal(false)}>Bekor qilish</Button>
           <Button variant="danger" loading={formLoading} onClick={handleDelete}>O'chirish</Button>
+        </div>
+      </Modal>
+
+      {/* Import Modal */}
+      <Modal isOpen={showImportModal} onClose={() => setShowImportModal(false)} title="Excel dan import" size="lg">
+        <div className="space-y-4">
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <p className="text-blue-800">
+              <strong>{importData.length}</strong> ta o'quvchi topildi. Quyidagi ma'lumotlarni tekshiring va tasdiqlang.
+            </p>
+          </div>
+          
+          <div className="max-h-96 overflow-auto border rounded-lg">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr>
+                  <th className="px-3 py-2 text-left">#</th>
+                  <th className="px-3 py-2 text-left">Ism familiya</th>
+                  <th className="px-3 py-2 text-left">Telefon</th>
+                  <th className="px-3 py-2 text-left">Guruh</th>
+                  <th className="px-3 py-2 text-left">Ota-ona</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {importData.map((row, index) => (
+                  <tr key={index} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 text-gray-500">{index + 1}</td>
+                    <td className="px-3 py-2 font-medium">{row.fullName}</td>
+                    <td className="px-3 py-2">{row.phone || '-'}</td>
+                    <td className="px-3 py-2">
+                      {groups.find(g => g.name?.toLowerCase() === row.groupName?.toLowerCase()) ? (
+                        <Badge variant="success">{row.groupName}</Badge>
+                      ) : (
+                        <Badge variant="warning">{row.groupName || 'Yo\'q'}</Badge>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">{row.parentName || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          
+          <div className="flex justify-end gap-2 pt-4 border-t">
+            <Button variant="ghost" onClick={() => { setShowImportModal(false); setImportData([]); }}>
+              Bekor qilish
+            </Button>
+            <Button 
+              icon={Upload} 
+              loading={importLoading} 
+              onClick={handleImport}
+            >
+              {importData.length} ta o'quvchi qo'shish
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Limit Modal */}
+      <Modal isOpen={showLimitModal} onClose={() => setShowLimitModal(false)} title="Limit tugadi">
+        <div className="text-center py-4">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <AlertTriangle className="w-8 h-8 text-red-600" />
+          </div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">O'quvchilar limiti tugadi</h3>
+          <p className="text-gray-600 mb-4">
+            {SUBSCRIPTION_PLANS[subscription]?.nameUz || 'Joriy'} tarifda {limitCheck.limit} ta o'quvchi cheklovi mavjud.
+            <br />
+            Hozirda {limitCheck.current} ta o'quvchi ro'yxatdan o'tgan.
+          </p>
+          <div className="bg-gray-50 rounded-lg p-4 mb-4">
+            <p className="text-sm text-gray-500 mb-2">Limitni oshirish uchun:</p>
+            <p className="font-semibold text-primary-600">Tarifni yangilang</p>
+          </div>
+          <div className="flex justify-center gap-2">
+            <Button variant="ghost" onClick={() => setShowLimitModal(false)}>Yopish</Button>
+            <Button onClick={() => window.location.href = '/settings'}>Sozlamalar</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Import Modal */}
+      <Modal 
+        isOpen={showImportModal} 
+        onClose={() => { setShowImportModal(false); setImportData([]); }} 
+        title="O'quvchilarni import qilish"
+        size="lg"
+      >
+        <div className="space-y-4">
+          <p className="text-gray-600">
+            Excel dan {importData.length} ta o'quvchi topildi. Tekshirib, import qiling.
+          </p>
+          
+          {/* Preview table */}
+          <div className="max-h-96 overflow-auto border rounded-lg">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr>
+                  <th className="px-3 py-2 text-left">#</th>
+                  <th className="px-3 py-2 text-left">Ism</th>
+                  <th className="px-3 py-2 text-left">Telefon</th>
+                  <th className="px-3 py-2 text-left">Guruh</th>
+                  <th className="px-3 py-2 text-left">Ota-ona</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {importData.map((row, idx) => (
+                  <tr key={idx} className="hover:bg-gray-50">
+                    <td className="px-3 py-2">{idx + 1}</td>
+                    <td className="px-3 py-2 font-medium">{row.fullName}</td>
+                    <td className="px-3 py-2">{row.phone}</td>
+                    <td className="px-3 py-2">
+                      <Badge variant={row.groupId ? 'success' : 'warning'}>
+                        {row.groupName || 'Topilmadi'}
+                      </Badge>
+                    </td>
+                    <td className="px-3 py-2">{row.parentName || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          
+          {/* Limit check */}
+          {limitCheck.limit !== -1 && (students.length + importData.length > limitCheck.limit) && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-red-600" />
+              <p className="text-red-600 text-sm">
+                Limit oshib ketadi! Hozir: {students.length}, Import: {importData.length}, Limit: {limitCheck.limit}
+              </p>
+            </div>
+          )}
+          
+          <div className="flex justify-end gap-2 pt-4 border-t">
+            <Button 
+              variant="ghost" 
+              onClick={() => { setShowImportModal(false); setImportData([]); }}
+            >
+              Bekor qilish
+            </Button>
+            <Button 
+              onClick={handleImport}
+              loading={importLoading}
+              disabled={limitCheck.limit !== -1 && (students.length + importData.length > limitCheck.limit)}
+            >
+              Import qilish ({importData.length} ta)
+            </Button>
+          </div>
         </div>
       </Modal>
     </div>

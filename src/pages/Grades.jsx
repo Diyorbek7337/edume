@@ -10,6 +10,7 @@ import { toast } from 'react-toastify';
 const Grades = () => {
   const { userData, role } = useAuth();
   const [grades, setGrades] = useState([]);
+  const [allGroupGrades, setAllGroupGrades] = useState([]); // Reyting uchun barcha baholar
   const [groups, setGroups] = useState([]);
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -117,14 +118,20 @@ const Grades = () => {
         studentsAPI.getByGroup(selectedGroup)
       ]);
       
-      // O'quvchi/Ota-ona faqat o'z baholarini ko'radi
+      console.log('Grades - gradesData:', gradesData.length, 'studentsData:', studentsData.length);
+      console.log('Grades - isStudentOrParent:', isStudentOrParent, 'studentData:', studentData?.id);
+      
+      // Barcha guruh baholarini reyting uchun saqlash
+      setAllGroupGrades(gradesData);
+      
+      // O'quvchi/Ota-ona faqat o'z baholarini ko'radi (jadvalda)
       if (isStudentOrParent && studentData) {
         setGrades(gradesData.filter(g => g.studentId === studentData.id));
       } else {
         setGrades(gradesData);
       }
       setStudents(studentsData);
-    } catch (err) { console.error(err); }
+    } catch (err) { console.error('fetchGradesAndStudents error:', err); }
   };
 
   const handleAdd = async (e) => {
@@ -168,11 +175,13 @@ const Grades = () => {
     return 'bg-red-100 text-red-700';
   };
 
-  // O'quvchi statistikasi
+  // O'quvchi statistikasi (reyting uchun barcha guruh baholaridan)
   const getStudentStats = () => {
     const stats = {};
+    const gradesForStats = allGroupGrades.length > 0 ? allGroupGrades : grades;
+    
     students.forEach(s => {
-      const studentGrades = grades.filter(g => g.studentId === s.id);
+      const studentGrades = gradesForStats.filter(g => g.studentId === s.id);
       if (studentGrades.length > 0) {
         const avg = studentGrades.reduce((sum, g) => sum + ((g.grade / g.maxGrade) * 100), 0) / studentGrades.length;
         stats[s.id] = { avg: Math.round(avg), count: studentGrades.length };

@@ -11,6 +11,7 @@ import  DashboardLayout  from './components/layout/DashboardLayout';
 
 // Pages
 import Dashboard from './pages/Dashboard';
+import SuperAdmin from './pages/SuperAdmin';
 import Admins from './pages/Admins';
 import Students from './pages/Students';
 import Teachers from './pages/Teachers';
@@ -25,6 +26,14 @@ import Profile from './pages/Profile';
 import Reports from './pages/Reports';
 import Schedule from './pages/Schedule';
 import TeacherRatings from './pages/TeacherRatings';
+import Homework from './pages/Homework';
+import GroupChat from './pages/GroupChat';
+import Quizzes from './pages/Quizzes';
+import PDFReports from './pages/PDFReports';
+import Leaderboard from './pages/Leaderboard';
+import Materials from './pages/Materials';
+import RewardsShop from './pages/RewardsShop';
+import Certificates from './pages/Certificates';
 
 function App() {
   return (
@@ -34,6 +43,9 @@ function App() {
           {/* Public */}
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
+          
+          {/* Super Admin - alohida layout */}
+          <Route path="/super-admin" element={<ProtectedRoute><SuperAdmin /></ProtectedRoute>} />
 
           {/* Protected */}
           <Route path="/" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
@@ -57,6 +69,14 @@ function App() {
             <Route path="profile" element={<Profile />} />
             <Route path="schedule" element={<Schedule />} />
             <Route path="teacher-ratings" element={<TeacherRatings />} />
+            <Route path="homework" element={<Homework />} />
+            <Route path="chat" element={<GroupChat />} />
+            <Route path="quizzes" element={<Quizzes />} />
+            <Route path="pdf-reports" element={<PDFReports />} />
+            <Route path="leaderboard" element={<Leaderboard />} />
+            <Route path="materials" element={<Materials />} />
+            <Route path="rewards" element={<RewardsShop />} />
+            <Route path="certificates" element={<Certificates />} />
             
             {/* Teacher routes */}
             <Route path="my-groups" element={<Groups />} />

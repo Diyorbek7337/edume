@@ -1,4 +1,5 @@
 export const ROLES = {
+  SUPER_ADMIN: 'super_admin',
   DIRECTOR: 'director',
   ADMIN: 'admin',
   TEACHER: 'teacher',
@@ -7,6 +8,7 @@ export const ROLES = {
 };
 
 export const ROLE_NAMES = {
+  super_admin: 'Super Admin',
   director: 'Direktor',
   admin: 'Administrator',
   teacher: "O'qituvchi",

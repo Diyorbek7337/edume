@@ -317,7 +317,7 @@ const Register = () => {
               </div>
               
               <div className="bg-blue-50 rounded-lg p-4 mb-6 text-left">
-                <h3 className="font-semibold text-blue-900 mb-2">🎁 14 kunlik bepul sinov</h3>
+                <h3 className="font-semibold text-blue-900 mb-2">🎁 7 kunlik bepul sinov</h3>
                 <p className="text-sm text-blue-700">
                   Sizga 14 kunlik bepul sinov muddati berildi. Bu davr ichida barcha funksiyalardan foydalanishingiz mumkin.
                 </p>

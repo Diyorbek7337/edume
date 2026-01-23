@@ -4,7 +4,7 @@ import { Card, Button, Select, Badge, Avatar, Loading } from '../components/comm
 import { groupsAPI, studentsAPI, attendanceAPI, teachersAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES, ATTENDANCE_STATUS } from '../utils/constants';
-import { formatDate } from '../utils/helpers';
+import { formatDate, formatDateISO } from '../utils/helpers';
 import { toast } from 'react-toastify';
 
 const Attendance = () => {
@@ -104,24 +104,19 @@ const Attendance = () => {
     finally { setLoading(false); }
   };
 
-const fetchStudentsAndAttendance = async () => {
+  const fetchStudentsAndAttendance = async () => {
     try {
-      // Barcha o'quvchilarni olib, guruh bo'yicha filter qilish
-      const allStudents = await studentsAPI.getAll();
-      let studentsData = allStudents.filter(s => 
-        s.groupId === selectedGroup || 
-        (Array.isArray(s.groups) && s.groups.includes(selectedGroup))
-      );
+      const [studentsData, attendanceData] = await Promise.all([
+        studentsAPI.getByGroup(selectedGroup),
+        attendanceAPI.getByGroupAndDate(selectedGroup, formatDateISO(selectedDate))
+      ]);
       
       // O'quvchi/Ota-ona faqat o'zini ko'radi
       if (isStudentOrParent && studentData) {
-        studentsData = studentsData.filter(s => s.id === studentData.id);
+        setStudents(studentsData.filter(s => s.id === studentData.id));
+      } else {
+        setStudents(studentsData);
       }
-      
-      setStudents(studentsData);
-      
-      // Davomat ma'lumotlarini olish
-      const attendanceData = await attendanceAPI.getByGroupAndDate(selectedGroup, formatDate(selectedDate));
       
       const attendanceMap = {};
       attendanceData.forEach(a => { attendanceMap[a.studentId] = a.status; });
@@ -130,11 +125,9 @@ const fetchStudentsAndAttendance = async () => {
       // Agar davomat saqlangan bo'lsa, qulflash (admin bundan mustasno)
       const hasExistingAttendance = attendanceData.length > 0;
       setIsLocked(hasExistingAttendance && !isAdmin);
-    } catch (err) { 
-      console.error('Fetch error:', err); 
-      toast.error('O\'quvchilarni yuklashda xatolik');
-    }
+    } catch (err) { console.error(err); }
   };
+
   const handleDateChange = (days) => {
     const newDate = new Date(selectedDate);
     newDate.setDate(newDate.getDate() + days);
@@ -153,7 +146,7 @@ const fetchStudentsAndAttendance = async () => {
         studentName: s.fullName,
         status: attendance[s.id] || ATTENDANCE_STATUS.ABSENT
       }));
-      await attendanceAPI.save(selectedGroup, formatDate(selectedDate), records);
+      await attendanceAPI.save(selectedGroup, formatDateISO(selectedDate), records);
       toast.success("Davomat saqlandi!");
     } catch (err) { toast.error("Xatolik yuz berdi"); }
     finally { setSaving(false); }
@@ -192,8 +185,8 @@ const fetchStudentsAndAttendance = async () => {
     return (
       <div className="space-y-6 animate-fade-in">
         <h1 className="text-2xl font-bold text-gray-900">Davomat</h1>
-        <Card className="py-12 text-center">
-          <Users className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+        <Card className="text-center py-12">
+          <Users className="w-12 h-12 text-gray-300 mx-auto mb-4" />
           <p className="text-gray-500">Sizga hali guruh biriktirilmagan</p>
         </Card>
       </div>
@@ -202,7 +195,7 @@ const fetchStudentsAndAttendance = async () => {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Davomat</h1>
           <p className="text-gray-500">Kunlik davomat qayd qilish</p>
@@ -215,17 +208,17 @@ const fetchStudentsAndAttendance = async () => {
         )}
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card padding="p-4">
           <div className="flex items-center justify-between">
-            <button onClick={() => handleDateChange(-1)} className="p-2 rounded-lg hover:bg-gray-100">
+            <button onClick={() => handleDateChange(-1)} className="p-2 hover:bg-gray-100 rounded-lg">
               <ChevronLeft className="w-5 h-5" />
             </button>
-            <div className="flex items-center gap-2 text-center">
+            <div className="text-center flex items-center gap-2">
               <Calendar className="w-5 h-5 text-primary-600" />
               <span className="font-semibold">{formatDate(selectedDate, 'EEEE, d MMMM yyyy')}</span>
             </div>
-            <button onClick={() => handleDateChange(1)} className="p-2 rounded-lg hover:bg-gray-100">
+            <button onClick={() => handleDateChange(1)} className="p-2 hover:bg-gray-100 rounded-lg">
               <ChevronRight className="w-5 h-5" />
             </button>
           </div>
@@ -244,7 +237,7 @@ const fetchStudentsAndAttendance = async () => {
 
       {selectedGroup && (
         <>
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Card padding="p-3" className="text-center">
               <Users className="w-5 h-5 mx-auto text-gray-500" />
               <p className="text-xl font-bold">{stats.total}</p>
@@ -268,7 +261,7 @@ const fetchStudentsAndAttendance = async () => {
           </div>
 
           <Card>
-            <h3 className="mb-4 text-lg font-semibold">O'quvchilar ro'yxati</h3>
+            <h3 className="text-lg font-semibold mb-4">O'quvchilar ro'yxati</h3>
             {students.length > 0 ? (
               <div className="space-y-3">
                 {students.map((student, index) => (
@@ -279,7 +272,7 @@ const fetchStudentsAndAttendance = async () => {
                     attendance[student.id] === ATTENDANCE_STATUS.EXCUSED ? 'border-blue-200 bg-blue-50/50' :
                     'border-gray-100'
                   }`}>
-                    <span className="w-6 text-gray-400">{index + 1}</span>
+                    <span className="text-gray-400 w-6">{index + 1}</span>
                     <Avatar name={student.fullName} />
                     <div className="flex-1">
                       <p className="font-medium">{student.fullName}</p>
@@ -307,15 +300,15 @@ const fetchStudentsAndAttendance = async () => {
                 ))}
               </div>
             ) : (
-              <p className="py-8 text-center text-gray-500">Bu guruhda o'quvchilar yo'q</p>
+              <p className="text-center text-gray-500 py-8">Bu guruhda o'quvchilar yo'q</p>
             )}
           </Card>
         </>
       )}
 
       {!selectedGroup && (
-        <Card className="py-12 text-center">
-          <Users className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+        <Card className="text-center py-12">
+          <Users className="w-12 h-12 text-gray-300 mx-auto mb-4" />
           <p className="text-gray-500">Davomat olish uchun guruhni tanlang</p>
         </Card>
       )}

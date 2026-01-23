@@ -11,7 +11,7 @@ import {
   studentsAPI, teachersAPI, groupsAPI, paymentsAPI, gradesAPI, 
   attendanceAPI, leadsAPI, settingsAPI 
 } from '../services/api';
-import { formatMoney, formatDate } from '../utils/helpers';
+import { formatMoney, formatDate, toISODateString } from '../utils/helpers';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   PieChart, Pie, Cell
@@ -31,47 +31,11 @@ const AdminDashboard = () => {
   const [monthlyRevenue, setMonthlyRevenue] = useState([]);
   const [groupStats, setGroupStats] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [period, setPeriod] = useState('month');
-
-  // Date helper functions
-  const toLocalDateStr = (date) => {
-    if (!date) return null;
-    const d = date instanceof Date ? date : new Date(date);
-    return d.toLocaleDateString('en-CA'); // YYYY-MM-DD
-  };
-
-  const normalizeDate = (value) => {
-    if (!value) return null;
-
-    // STRING formats
-    if (typeof value === 'string') {
-      // DD.MM.YYYY -> YYYY-MM-DD
-      if (value.includes('.')) {
-        const [day, month, year] = value.split('.');
-        return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      }
-      // already YYYY-MM-DD
-      return value;
-    }
-
-    // Firestore Timestamp
-    if (value?.toDate) {
-      return toLocalDateStr(value.toDate());
-    }
-
-    // Timestamp seconds
-    if (value?.seconds) {
-      return toLocalDateStr(new Date(value.seconds * 1000));
-    }
-
-    // Date / number
-    return toLocalDateStr(new Date(value));
-  };
+  const [period, setPeriod] = useState('month'); // day, week, month, all
 
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        // console.log('AdminDashboard: Fetching stats...');
         const [students, teachers, groups, payments, leads] = await Promise.all([
           studentsAPI.getAll(),
           teachersAPI.getAll(),
@@ -80,38 +44,21 @@ const AdminDashboard = () => {
           leadsAPI.getAll()
         ]);
         
-        // console.log('Fetched data:', { 
-        //   students: students?.length, 
-        //   teachers: teachers?.length, 
-        //   groups: groups?.length, 
-        //   payments: payments?.length, 
-        //   leads: leads?.length 
-        // });
-        
         // Period bo'yicha filter
         const now = new Date();
-        const todayStr = toLocalDateStr(now);
-
-        const filterByPeriod = (dateStr) => {
-          if (!dateStr || period === 'all') return true;
-
-          const normalizedDate = normalizeDate(dateStr);
-          if (!normalizedDate) return false;
-
+        const filterByPeriod = (date) => {
+          if (!date) return false;
+          const d = date?.toDate ? date.toDate() : new Date(date);
+          if (isNaN(d.getTime())) return false;
+          
           switch (period) {
             case 'day':
-              return normalizedDate === todayStr;
-
-            case 'week': {
-              const start = new Date();
-              start.setDate(now.getDate() - 6);
-              const startStr = toLocalDateStr(start);
-              return normalizedDate >= startStr && normalizedDate <= todayStr;
-            }
-
+              return d.toDateString() === now.toDateString();
+            case 'week':
+              const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+              return d >= weekAgo;
             case 'month':
-              return normalizedDate.startsWith(todayStr.slice(0, 7));
-
+              return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
             default:
               return true;
           }
@@ -120,16 +67,10 @@ const AdminDashboard = () => {
         // Daromad hisoblash
         const filteredPayments = payments.filter(p => {
           if (p.status !== 'paid') return false;
-          const paidDate = normalizeDate(p.paidAt || p.createdAt);
+          const paidDate = p.paidAt || p.createdAt;
           return filterByPeriod(paidDate);
         });
         const totalRevenue = filteredPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
-
-        // console.log('Revenue calculation:', { 
-        //   totalPayments: payments.length, 
-        //   filteredPayments: filteredPayments.length, 
-        //   totalRevenue 
-        // });
 
         // Kutilayotgan to'lovlar
         const pending = payments
@@ -138,15 +79,6 @@ const AdminDashboard = () => {
 
         // Yangi lidlar
         const newLeadsCount = leads.filter(l => l.status === 'new').length;
-
-        // console.log('Stats calculated:', { 
-        //   students: students.length, 
-        //   teachers: teachers.length, 
-        //   groups: groups.length, 
-        //   totalRevenue, 
-        //   pending, 
-        //   newLeadsCount 
-        // });
 
         setStats({
           students: students.length,
@@ -159,27 +91,14 @@ const AdminDashboard = () => {
         });
 
         setRecentStudents(students.slice(-5).reverse());
-        const paidPayments = payments.filter(p => p.status === 'paid');
-        setRecentPayments(paidPayments.slice(-5).reverse());
-
-        // console.log('Recent data:', { 
-        //   recentStudents: students.slice(-5).length, 
-        //   recentPayments: paidPayments.slice(-5).length 
-        // });
+        setRecentPayments(payments.filter(p => p.status === 'paid').slice(-5).reverse());
 
         // Guruhlar statistikasi - haqiqiy o'quvchilar soni
         const gStats = await Promise.all(groups.map(async (g) => {
-          try {
-            const groupStudents = await studentsAPI.getByGroup(g.id);
-            return { name: g.name, students: groupStudents?.length || 0 };
-          } catch (err) {
-            console.error('Error fetching group students:', err);
-            return { name: g.name, students: 0 };
-          }
+          const groupStudents = await studentsAPI.getByGroup(g.id);
+          return { name: g.name, students: groupStudents.length };
         }));
         setGroupStats(gStats);
-
-        // console.log('Group stats:', gStats);
 
         // Oylik daromad grafigi
         const monthNames = ['Yan', 'Fev', 'Mar', 'Apr', 'May', 'Iyn', 'Iyl', 'Avg', 'Sen', 'Okt', 'Noy', 'Dek'];
@@ -192,31 +111,15 @@ const AdminDashboard = () => {
           const monthRevenue = payments
             .filter(p => {
               if (p.status !== 'paid') return false;
-              const paidDateStr = normalizeDate(p.paidAt || p.createdAt);
-              if (!paidDateStr) return false;
-              const [pYear, pMonth] = paidDateStr.split('-').map(Number);
-              return pMonth - 1 === month && pYear === year;
+              const paidDate = p.paidAt ? new Date(p.paidAt) : (p.createdAt?.toDate ? p.createdAt.toDate() : new Date(p.createdAt));
+              return paidDate.getMonth() === month && paidDate.getFullYear() === year;
             })
             .reduce((sum, p) => sum + (p.amount || 0), 0);
           revenueByMonth.push({ name: monthNames[month], revenue: monthRevenue / 1000000 });
         }
         setMonthlyRevenue(revenueByMonth);
 
-        // console.log('Monthly revenue:', revenueByMonth);
-
-      } catch (err) { 
-        console.error('AdminDashboard error:', err);
-        // Xato bo'lsa ham asosiy ma'lumotlarni ko'rsatish
-        setStats({
-          students: 0,
-          teachers: 0,
-          groups: 0,
-          revenue: 0,
-          newLeads: 0,
-          pendingPayments: 0,
-          activeStudents: 0
-        });
-      }
+      } catch (err) { console.error(err); }
       finally { setLoading(false); }
     };
     fetchStats();
@@ -228,7 +131,7 @@ const AdminDashboard = () => {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Bosh sahifa</h1>
           <p className="text-gray-500">O'quv markaz statistikasi</p>
@@ -238,7 +141,7 @@ const AdminDashboard = () => {
           <select
             value={period}
             onChange={(e) => setPeriod(e.target.value)}
-            className="px-3 py-2 text-sm border rounded-lg"
+            className="px-3 py-2 border rounded-lg text-sm"
           >
             <option value="day">Bugun</option>
             <option value="week">Bu hafta</option>
@@ -249,53 +152,53 @@ const AdminDashboard = () => {
       </div>
 
       {/* Asosiy statistika */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <Card padding="p-5" className="border-blue-200 bg-gradient-to-br from-blue-50 to-blue-100">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card padding="p-5" className="bg-gradient-to-br from-blue-50 to-blue-100 border-blue-200">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-blue-600">O'quvchilar</p>
+              <p className="text-sm text-blue-600 font-medium">O'quvchilar</p>
               <p className="text-3xl font-bold text-blue-700">{stats.students}</p>
-              <p className="mt-1 text-xs text-blue-500">{stats.activeStudents} faol</p>
+              <p className="text-xs text-blue-500 mt-1">{stats.activeStudents} faol</p>
             </div>
-            <div className="flex items-center justify-center bg-blue-500 shadow-lg w-14 h-14 rounded-2xl shadow-blue-200">
-              <Users className="text-white w-7 h-7" />
+            <div className="w-14 h-14 bg-blue-500 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200">
+              <Users className="w-7 h-7 text-white" />
             </div>
           </div>
         </Card>
         
-        <Card padding="p-5" className="border-green-200 bg-gradient-to-br from-green-50 to-green-100">
+        <Card padding="p-5" className="bg-gradient-to-br from-green-50 to-green-100 border-green-200">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-green-600">O'qituvchilar</p>
+              <p className="text-sm text-green-600 font-medium">O'qituvchilar</p>
               <p className="text-3xl font-bold text-green-700">{stats.teachers}</p>
-              <p className="mt-1 text-xs text-green-500">{stats.groups} guruh</p>
+              <p className="text-xs text-green-500 mt-1">{stats.groups} guruh</p>
             </div>
-            <div className="flex items-center justify-center bg-green-500 shadow-lg w-14 h-14 rounded-2xl shadow-green-200">
-              <GraduationCap className="text-white w-7 h-7" />
+            <div className="w-14 h-14 bg-green-500 rounded-2xl flex items-center justify-center shadow-lg shadow-green-200">
+              <GraduationCap className="w-7 h-7 text-white" />
             </div>
           </div>
         </Card>
         
-        <Card padding="p-5" className="border-purple-200 bg-gradient-to-br from-purple-50 to-purple-100">
+        <Card padding="p-5" className="bg-gradient-to-br from-purple-50 to-purple-100 border-purple-200">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-purple-600">Daromad ({periodLabels[period]})</p>
+              <p className="text-sm text-purple-600 font-medium">Daromad ({periodLabels[period]})</p>
               <p className="text-xl font-bold text-purple-700">{formatMoney(stats.revenue)}</p>
             </div>
-            <div className="flex items-center justify-center bg-purple-500 shadow-lg w-14 h-14 rounded-2xl shadow-purple-200">
-              <CreditCard className="text-white w-7 h-7" />
+            <div className="w-14 h-14 bg-purple-500 rounded-2xl flex items-center justify-center shadow-lg shadow-purple-200">
+              <CreditCard className="w-7 h-7 text-white" />
             </div>
           </div>
         </Card>
         
-        <Card padding="p-5" className="border-orange-200 bg-gradient-to-br from-orange-50 to-orange-100">
+        <Card padding="p-5" className="bg-gradient-to-br from-orange-50 to-orange-100 border-orange-200">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-orange-600">Yangi lidlar</p>
+              <p className="text-sm text-orange-600 font-medium">Yangi lidlar</p>
               <p className="text-3xl font-bold text-orange-700">{stats.newLeads}</p>
             </div>
-            <div className="flex items-center justify-center bg-orange-500 shadow-lg w-14 h-14 rounded-2xl shadow-orange-200">
-              <UserPlus className="text-white w-7 h-7" />
+            <div className="w-14 h-14 bg-orange-500 rounded-2xl flex items-center justify-center shadow-lg shadow-orange-200">
+              <UserPlus className="w-7 h-7 text-white" />
             </div>
           </div>
         </Card>
@@ -303,10 +206,10 @@ const AdminDashboard = () => {
 
       {/* Qarzdorlik ogohlantirishi */}
       {stats.pendingPayments > 0 && (
-        <Card padding="p-4" className="border-red-200 bg-red-50">
+        <Card padding="p-4" className="bg-red-50 border-red-200">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="flex items-center justify-center w-10 h-10 bg-red-100 rounded-lg">
+              <div className="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center">
                 <AlertTriangle className="w-5 h-5 text-red-600" />
               </div>
               <div>
@@ -315,7 +218,7 @@ const AdminDashboard = () => {
               </div>
             </div>
             <Link to="/payments">
-              <Button variant="outline" size="sm" className="text-red-600 border-red-300 hover:bg-red-100">
+              <Button variant="outline" size="sm" className="border-red-300 text-red-600 hover:bg-red-100">
                 Ko'rish <ArrowRight className="w-4 h-4 ml-1" />
               </Button>
             </Link>
@@ -323,10 +226,10 @@ const AdminDashboard = () => {
         </Card>
       )}
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Daromad grafigi */}
         <Card>
-          <h3 className="flex items-center gap-2 mb-4 text-lg font-semibold">
+          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
             <TrendingUp className="w-5 h-5 text-primary-600" /> Oylik daromad (mln)
           </h3>
           <div className="h-64">
@@ -344,7 +247,7 @@ const AdminDashboard = () => {
 
         {/* Guruhlar bo'yicha */}
         <Card>
-          <h3 className="flex items-center gap-2 mb-4 text-lg font-semibold">
+          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
             <UsersRound className="w-5 h-5 text-primary-600" /> Guruhlar bo'yicha
           </h3>
           {groupStats.length > 0 ? (
@@ -369,23 +272,23 @@ const AdminDashboard = () => {
               </ResponsiveContainer>
             </div>
           ) : (
-            <p className="py-8 text-center text-gray-500">Guruhlar yo'q</p>
+            <p className="text-center text-gray-500 py-8">Guruhlar yo'q</p>
           )}
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* So'nggi o'quvchilar */}
         <Card>
           <div className="flex items-center justify-between mb-4">
-            <h3 className="flex items-center gap-2 text-lg font-semibold">
+            <h3 className="text-lg font-semibold flex items-center gap-2">
               <Users className="w-5 h-5 text-primary-600" /> So'nggi o'quvchilar
             </h3>
-            <Link to="/students" className="text-sm text-primary-600 hover:underline">Barchasi</Link>
+            <Link to="/students" className="text-primary-600 text-sm hover:underline">Barchasi</Link>
           </div>
           <div className="space-y-3">
             {recentStudents.length > 0 ? recentStudents.map(student => (
-              <div key={student.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50">
+              <div key={student.id} className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded-lg">
                 <Avatar name={student.fullName} />
                 <div className="flex-1 min-w-0">
                   <p className="font-medium truncate">{student.fullName}</p>
@@ -393,7 +296,7 @@ const AdminDashboard = () => {
                 </div>
               </div>
             )) : (
-              <p className="py-4 text-center text-gray-500">O'quvchilar yo'q</p>
+              <p className="text-center text-gray-500 py-4">O'quvchilar yo'q</p>
             )}
           </div>
         </Card>
@@ -401,16 +304,16 @@ const AdminDashboard = () => {
         {/* So'nggi to'lovlar */}
         <Card>
           <div className="flex items-center justify-between mb-4">
-            <h3 className="flex items-center gap-2 text-lg font-semibold">
+            <h3 className="text-lg font-semibold flex items-center gap-2">
               <CreditCard className="w-5 h-5 text-primary-600" /> So'nggi to'lovlar
             </h3>
-            <Link to="/payments" className="text-sm text-primary-600 hover:underline">Barchasi</Link>
+            <Link to="/payments" className="text-primary-600 text-sm hover:underline">Barchasi</Link>
           </div>
           <div className="space-y-3">
             {recentPayments.length > 0 ? recentPayments.map(payment => (
-              <div key={payment.id} className="flex items-center justify-between p-2 rounded-lg hover:bg-gray-50">
+              <div key={payment.id} className="flex items-center justify-between p-2 hover:bg-gray-50 rounded-lg">
                 <div className="flex items-center gap-3">
-                  <div className="flex items-center justify-center w-10 h-10 bg-green-100 rounded-lg">
+                  <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
                     <CheckCircle className="w-5 h-5 text-green-600" />
                   </div>
                   <div>
@@ -421,7 +324,7 @@ const AdminDashboard = () => {
                 <p className="font-bold text-green-600">{formatMoney(payment.amount)}</p>
               </div>
             )) : (
-              <p className="py-4 text-center text-gray-500">To'lovlar yo'q</p>
+              <p className="text-center text-gray-500 py-4">To'lovlar yo'q</p>
             )}
           </div>
         </Card>
@@ -429,22 +332,22 @@ const AdminDashboard = () => {
 
       {/* Tezkor havolalar */}
       <Card>
-        <h3 className="mb-4 text-lg font-semibold">Tezkor amallar</h3>
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-          <Link to="/students" className="p-4 text-center transition bg-blue-50 rounded-xl hover:bg-blue-100">
-            <Users className="w-8 h-8 mx-auto mb-2 text-blue-600" />
+        <h3 className="text-lg font-semibold mb-4">Tezkor amallar</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Link to="/students" className="p-4 bg-blue-50 rounded-xl text-center hover:bg-blue-100 transition">
+            <Users className="w-8 h-8 text-blue-600 mx-auto mb-2" />
             <p className="font-medium text-blue-700">O'quvchi qo'shish</p>
           </Link>
-          <Link to="/leads" className="p-4 text-center transition bg-orange-50 rounded-xl hover:bg-orange-100">
-            <UserPlus className="w-8 h-8 mx-auto mb-2 text-orange-600" />
+          <Link to="/leads" className="p-4 bg-orange-50 rounded-xl text-center hover:bg-orange-100 transition">
+            <UserPlus className="w-8 h-8 text-orange-600 mx-auto mb-2" />
             <p className="font-medium text-orange-700">Lid qo'shish</p>
           </Link>
-          <Link to="/payments" className="p-4 text-center transition bg-green-50 rounded-xl hover:bg-green-100">
-            <CreditCard className="w-8 h-8 mx-auto mb-2 text-green-600" />
+          <Link to="/payments" className="p-4 bg-green-50 rounded-xl text-center hover:bg-green-100 transition">
+            <CreditCard className="w-8 h-8 text-green-600 mx-auto mb-2" />
             <p className="font-medium text-green-700">To'lov qabul qilish</p>
           </Link>
-          <Link to="/groups" className="p-4 text-center transition bg-purple-50 rounded-xl hover:bg-purple-100">
-            <UsersRound className="w-8 h-8 mx-auto mb-2 text-purple-600" />
+          <Link to="/groups" className="p-4 bg-purple-50 rounded-xl text-center hover:bg-purple-100 transition">
+            <UsersRound className="w-8 h-8 text-purple-600 mx-auto mb-2" />
             <p className="font-medium text-purple-700">Guruh ochish</p>
           </Link>
         </div>
@@ -457,16 +360,17 @@ const AdminDashboard = () => {
 const TeacherDashboard = () => {
   const { userData } = useAuth();
   const [groups, setGroups] = useState([]);
-  const [allAttendance, setAllAttendance] = useState([]);
+  const [allAttendance, setAllAttendance] = useState([]); // Barcha davomat
   const [totalStudents, setTotalStudents] = useState(0);
   const [todayAttendance, setTodayAttendance] = useState({ present: 0, absent: 0, late: 0 });
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState('all');
 
+  // Birinchi yuklash - guruhlar va davomat
   useEffect(() => {
     const fetchData = async () => {
       try {
-        // console.log('TeacherDashboard - userData:', userData);
+        console.log('TeacherDashboard - userData:', userData);
         
         const allTeachers = await teachersAPI.getAll();
         const teacher = allTeachers.find(t => 
@@ -475,7 +379,7 @@ const TeacherDashboard = () => {
           t.phone === userData?.phone ||
           t.phone?.replace(/\D/g, '') === userData?.phone?.replace(/\D/g, '')
         );
-        // console.log('Found teacher:', teacher);
+        console.log('Found teacher:', teacher);
         
         let allGroupsData = await groupsAPI.getAll();
         let groupsData = [];
@@ -488,7 +392,7 @@ const TeacherDashboard = () => {
           index === self.findIndex(t => t.id === g.id)
         );
         
-        // console.log('Teacher groups:', uniqueGroups);
+        console.log('Teacher groups:', uniqueGroups);
         
         let studentCount = 0;
         let allAtt = [];
@@ -506,7 +410,7 @@ const TeacherDashboard = () => {
         setGroups(groupsWithCounts);
         setTotalStudents(studentCount);
         setAllAttendance(allAtt);
-        // console.log('All attendance loaded:', allAtt.length);
+        console.log('All attendance loaded:', allAtt.length);
         
       } catch (err) { console.error('TeacherDashboard error:', err); }
       finally { setLoading(false); }
@@ -521,50 +425,23 @@ const TeacherDashboard = () => {
     const now = new Date();
     const todayStr = now.toISOString().split('T')[0];
     
-    // console.log('TeacherDashboard - Period changed:', period);
-    // console.log('Total attendance records:', allAttendance.length);
-    // console.log('Sample attendance:', allAttendance[0]);
-    
     const filteredAttendance = allAttendance.filter(a => {
-      const dateStr = a.date;
-      if (!dateStr) {
-        console.log('No date for attendance:', a);
-        return false;
-      }
-      
-      // Date normalizatsiya
-      let normalizedDate = dateStr;
-      if (typeof dateStr === 'string') {
-        if (dateStr.includes('.')) {
-          const [day, month, year] = dateStr.split('.');
-          normalizedDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-        }
-      } else if (dateStr?.toDate) {
-        normalizedDate = dateStr.toDate().toISOString().split('T')[0];
-      } else if (dateStr?.seconds) {
-        normalizedDate = new Date(dateStr.seconds * 1000).toISOString().split('T')[0];
-      }
-      
-      // console.log('Original date:', dateStr, 'Normalized:', normalizedDate, 'Today:', todayStr);
+      // Date ni ISO formatga convert qilish
+      const dateStr = toISODateString(a.date);
+      if (!dateStr) return false;
       
       if (period === 'all') return true;
       
       switch (period) {
         case 'day':
-          return normalizedDate === todayStr;
-        case 'week': {
-          const weekAgo = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+          return dateStr === todayStr;
+        case 'week':
+          const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
           const weekAgoStr = weekAgo.toISOString().split('T')[0];
-          const isInWeek = normalizedDate >= weekAgoStr && normalizedDate <= todayStr;
-          console.log('Week check:', normalizedDate, 'between', weekAgoStr, 'and', todayStr, '=', isInWeek);
-          return isInWeek;
-        }
-        case 'month': {
+          return dateStr >= weekAgoStr && dateStr <= todayStr;
+        case 'month':
           const monthPrefix = todayStr.substring(0, 7);
-          const isInMonth = normalizedDate.startsWith(monthPrefix);
-          console.log('Month check:', normalizedDate, 'starts with', monthPrefix, '=', isInMonth);
-          return isInMonth;
-        }
+          return dateStr.startsWith(monthPrefix);
         default:
           return true;
       }
@@ -574,7 +451,7 @@ const TeacherDashboard = () => {
     const absent = filteredAttendance.filter(a => a.status === 'absent').length;
     const late = filteredAttendance.filter(a => a.status === 'late').length;
     
-    // console.log('Period:', period, 'Total:', allAttendance.length, 'Filtered:', filteredAttendance.length, { present, absent, late });
+    console.log('TeacherDashboard - Period:', period, 'Filtered:', filteredAttendance.length, { present, absent, late });
     setTodayAttendance({ present, absent, late });
   }, [period, allAttendance, loading]);
 
@@ -584,7 +461,7 @@ const TeacherDashboard = () => {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Salom, {userData?.fullName}!</h1>
           <p className="text-gray-500">Darslaringiz va statistikangiz</p>
@@ -592,7 +469,7 @@ const TeacherDashboard = () => {
         <select
           value={period}
           onChange={(e) => setPeriod(e.target.value)}
-          className="px-3 py-2 text-sm border rounded-lg"
+          className="px-3 py-2 border rounded-lg text-sm"
         >
           <option value="day">Bugun</option>
           <option value="week">Bu hafta</option>
@@ -601,10 +478,10 @@ const TeacherDashboard = () => {
         </select>
       </div>
       
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card padding="p-5" className="bg-gradient-to-br from-blue-50 to-blue-100">
           <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-12 h-12 bg-blue-500 rounded-xl">
+            <div className="w-12 h-12 bg-blue-500 rounded-xl flex items-center justify-center">
               <UsersRound className="w-6 h-6 text-white" />
             </div>
             <div>
@@ -616,7 +493,7 @@ const TeacherDashboard = () => {
         
         <Card padding="p-5" className="bg-gradient-to-br from-green-50 to-green-100">
           <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-12 h-12 bg-green-500 rounded-xl">
+            <div className="w-12 h-12 bg-green-500 rounded-xl flex items-center justify-center">
               <Users className="w-6 h-6 text-white" />
             </div>
             <div>
@@ -628,7 +505,7 @@ const TeacherDashboard = () => {
 
         <Card padding="p-5" className="bg-gradient-to-br from-emerald-50 to-emerald-100">
           <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-12 h-12 bg-emerald-500 rounded-xl">
+            <div className="w-12 h-12 bg-emerald-500 rounded-xl flex items-center justify-center">
               <CheckCircle className="w-6 h-6 text-white" />
             </div>
             <div>
@@ -640,11 +517,11 @@ const TeacherDashboard = () => {
 
         <Card padding="p-5" className="bg-gradient-to-br from-red-50 to-red-100">
           <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-12 h-12 bg-red-500 rounded-xl">
+            <div className="w-12 h-12 bg-red-500 rounded-xl flex items-center justify-center">
               <XCircle className="w-6 h-6 text-white" />
             </div>
             <div>
-              <p className="text-sm text-red-600">Kelmadi ({periodLabels[period]})</p>
+              <p className="text-sm text-red-600">Kelmadi</p>
               <p className="text-2xl font-bold text-red-700">{todayAttendance.absent}</p>
             </div>
           </div>
@@ -652,17 +529,17 @@ const TeacherDashboard = () => {
       </div>
       
       <Card>
-        <h3 className="flex items-center gap-2 mb-4 text-lg font-semibold">
+        <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
           <BookOpen className="w-5 h-5 text-primary-600" /> Guruhlarim
         </h3>
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {groups.map(group => (
-            <div key={group.id} className="p-4 transition border bg-gray-50 rounded-xl hover:border-primary-300">
+            <div key={group.id} className="p-4 bg-gray-50 rounded-xl border hover:border-primary-300 transition">
               <div className="flex items-center justify-between mb-2">
-                <h4 className="text-lg font-semibold">{group.name}</h4>
+                <h4 className="font-semibold text-lg">{group.name}</h4>
                 <Badge variant="primary">{group.studentsCount || 0} o'quvchi</Badge>
               </div>
-              <p className="mb-3 text-sm text-gray-500">{group.schedule?.days} • {group.schedule?.time}</p>
+              <p className="text-sm text-gray-500 mb-3">{group.schedule?.days} • {group.schedule?.time}</p>
               <div className="flex gap-2">
                 <Link to="/attendance">
                   <Button size="sm" variant="outline">Davomat</Button>
@@ -674,7 +551,7 @@ const TeacherDashboard = () => {
             </div>
           ))}
           {groups.length === 0 && (
-            <p className="col-span-2 py-8 text-center text-gray-500">Sizga guruh biriktirilmagan</p>
+            <p className="text-gray-500 col-span-2 text-center py-8">Sizga guruh biriktirilmagan</p>
           )}
         </div>
       </Card>
@@ -693,53 +570,28 @@ const StudentDashboard = ({ isParent = false }) => {
   const [payments, setPayments] = useState([]);
   const [studentData, setStudentData] = useState(null);
   const [period, setPeriod] = useState('all');
-  const [children, setChildren] = useState([]);
+  const [children, setChildren] = useState([]); // Ota-ona uchun farzandlar ro'yxati
   const [selectedChildId, setSelectedChildId] = useState('');
-
-  const toLocalDateStr = (date) => {
-    if (!date) return null;
-    const d = date instanceof Date ? date : new Date(date);
-    return d.toLocaleDateString('en-CA');
-  };
-
-  const normalizeDate = (value) => {
-    if (!value) return null;
-
-    if (typeof value === 'string') {
-      if (value.includes('.')) {
-        const [day, month, year] = value.split('.');
-        return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      }
-      return value;
-    }
-
-    if (value?.toDate) {
-      return toLocalDateStr(value.toDate());
-    }
-
-    if (value?.seconds) {
-      return toLocalDateStr(new Date(value.seconds * 1000));
-    }
-
-    return toLocalDateStr(new Date(value));
-  };
 
   useEffect(() => {
     const fetchStudentData = async () => {
       try {
         const students = await studentsAPI.getAll();
-        // console.log('All students:', students);
-        // console.log('Current userData:', userData);
+        console.log('All students:', students);
+        console.log('Current userData:', userData);
         
         let student;
         
+        // Email va telefonni normallashtirish
         const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
         const userPhone = normalizePhone(userData?.phone);
         const userEmail = userData?.email?.toLowerCase();
         
         if (isParent) {
+          // Ota-ona - bir nechta farzand bo'lishi mumkin
           const childIds = userData?.childIds || (userData?.childId ? [userData.childId] : []);
           
+          // parentPhone orqali barcha farzandlarni topish
           const myChildren = students.filter(s => {
             const studentParentPhone = normalizePhone(s.parentPhone);
             return (
@@ -749,15 +601,17 @@ const StudentDashboard = ({ isParent = false }) => {
             );
           });
           
-          // console.log('Found children:', myChildren);
+          console.log('Found children:', myChildren);
           setChildren(myChildren);
           
           if (myChildren.length > 0) {
+            // Agar tanlangan farzand bo'lmasa, birinchisini tanlash
             const targetChildId = selectedChildId || myChildren[0].id;
             setSelectedChildId(targetChildId);
             student = myChildren.find(c => c.id === targetChildId) || myChildren[0];
           }
         } else {
+          // O'quvchi - email yoki telefon orqali
           student = students.find(s => {
             const studentPhone = normalizePhone(s.phone);
             const studentEmail = s.email?.toLowerCase();
@@ -769,19 +623,21 @@ const StudentDashboard = ({ isParent = false }) => {
           });
         }
         
-        // console.log('Found student:', student);
+        console.log('Found student:', student);
         
         if (student) {
           setStudentData(student);
           
+          // O'quvchi guruhlarini topish
           const allGroups = await groupsAPI.getAll();
-          // console.log('All groups:', allGroups);
+          console.log('All groups:', allGroups);
           
+          // groupId yoki studentIds orqali
           const studentGroups = allGroups.filter(g => 
             g.id === student.groupId || 
             g.studentIds?.includes(student.id)
           );
-          // console.log('Student groups:', studentGroups);
+          console.log('Student groups:', studentGroups);
           
           setGroups(studentGroups);
           
@@ -789,6 +645,7 @@ const StudentDashboard = ({ isParent = false }) => {
             setSelectedGroupId(studentGroups[0].id);
           }
           
+          // To'lovlar
           const allPayments = await paymentsAPI.getAll();
           setPayments(allPayments.filter(p => p.studentId === student.id));
         }
@@ -809,59 +666,53 @@ const StudentDashboard = ({ isParent = false }) => {
           attendanceAPI.getByGroup(selectedGroupId)
         ]);
         
-        // console.log('Raw gradesData:', gradesData);
-        // console.log('Raw attendanceData:', attendanceData);
-        // console.log('StudentData ID:', studentData.id);
+        console.log('Raw gradesData:', gradesData);
+        console.log('Raw attendanceData:', attendanceData);
+        console.log('StudentData ID:', studentData.id);
         
+        // Faqat bu o'quvchining ma'lumotlari
         const myGrades = gradesData.filter(g => g.studentId === studentData.id);
         const myAttendance = attendanceData.filter(a => a.studentId === studentData.id);
         
-        // console.log('Filtered myGrades:', myGrades);
-        // console.log('Filtered myAttendance:', myAttendance);
+        console.log('Filtered myGrades:', myGrades);
+        console.log('Filtered myAttendance:', myAttendance);
         
+        // Period bo'yicha filter
         const now = new Date();
-        const todayStr = toLocalDateStr(now);
-
-        const filterByPeriod = (dateStr) => {
-          if (!dateStr || period === 'all') return true;
-
+        const todayStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
+        
+        const filterByPeriod = (dateValue) => {
+          if (period === 'all') return true;
+          
+          const dateStr = toISODateString(dateValue);
+          if (!dateStr) {
+            console.log('Could not convert date:', dateValue);
+            return false;
+          }
+          
           switch (period) {
             case 'day':
               return dateStr === todayStr;
-
-            case 'week': {
-              const start = new Date();
-              start.setDate(now.getDate() - 6);
-              const startStr = toLocalDateStr(start);
-              return dateStr >= startStr && dateStr <= todayStr;
-            }
-
+            case 'week':
+              const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+              const weekAgoStr = weekAgo.toISOString().split('T')[0];
+              return dateStr >= weekAgoStr && dateStr <= todayStr;
             case 'month':
-              return dateStr.startsWith(todayStr.slice(0, 7));
-
+              const monthPrefix = todayStr.substring(0, 7); // YYYY-MM
+              return dateStr.startsWith(monthPrefix);
             default:
               return true;
           }
         };
-
-        const filteredGrades = myGrades.filter((g) =>
-          filterByPeriod(normalizeDate(g.date || g.createdAt))
-        );
-
-        const filteredAttendance = myAttendance.filter((a) =>
-          filterByPeriod(normalizeDate(a.date))
-        );
-
+        
+        const filteredGrades = myGrades.filter(g => filterByPeriod(g.date || g.createdAt));
+        const filteredAttendance = myAttendance.filter(a => filterByPeriod(a.date));
+        
+        console.log('StudentDashboard - Period:', period, 'Total:', myAttendance.length, 'Filtered:', filteredAttendance.length);
+        
         setGrades(filteredGrades);
         setAttendance(filteredAttendance);
-
-        // console.log(
-        //   'TODAY:', todayStr,
-        //   'RAW ATT:', myAttendance[0]?.date,
-        //   'NORMALIZED:', normalizeDate(myAttendance[0]?.date),
-        //   'RESULT:', filteredAttendance.length
-        // );
-      } catch (err) { console.error(err); }
+      } catch (err) { console.error('fetchGradesAndAttendance error:', err); }
     };
     
     fetchGradesAndAttendance();
@@ -871,11 +722,26 @@ const StudentDashboard = ({ isParent = false }) => {
 
   if (!studentData) {
     return (
-      <div className="py-12 text-center">
+      <div className="text-center py-12">
         <p className="text-gray-500">O'quvchi ma'lumotlari topilmadi</p>
       </div>
     );
   }
+
+  // To'lov holatini tekshirish
+  const now = new Date();
+  const currentMonth = now.getMonth();
+  const currentYear = now.getFullYear();
+  const currentMonthStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
+  
+  const hasPaidThisMonth = payments.some(p => 
+    p.status === 'paid' && p.month === currentMonthStr
+  );
+  
+  // Qarz summasini hisoblash
+  const totalDebt = payments
+    .filter(p => p.status === 'pending')
+    .reduce((sum, p) => sum + (p.amount || 0), 0);
 
   const gradeStats = {
     total: grades.length,
@@ -893,7 +759,7 @@ const StudentDashboard = ({ isParent = false }) => {
 
   const attendancePercent = attendanceStats.total > 0 
     ? Math.round((attendanceStats.present / attendanceStats.total) * 100) 
-    : 0;
+    : 0; // Davomat yo'q bo'lsa 0%
 
   const paymentStats = {
     paid: payments.filter(p => p.status === 'paid').reduce((sum, p) => sum + (p.amount || 0), 0),
@@ -905,7 +771,7 @@ const StudentDashboard = ({ isParent = false }) => {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">
             {isParent ? `${studentData?.fullName} natijalari` : 'Mening natijalarim'}
@@ -913,12 +779,13 @@ const StudentDashboard = ({ isParent = false }) => {
           <p className="text-gray-500">{selectedGroup?.name || 'Guruh tanlanmagan'}</p>
         </div>
         
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Ota-ona uchun farzand tanlash */}
           {isParent && children.length > 1 && (
             <select
               value={selectedChildId}
               onChange={(e) => setSelectedChildId(e.target.value)}
-              className="px-3 py-2 text-sm font-medium border border-blue-200 rounded-lg bg-blue-50"
+              className="px-3 py-2 border rounded-lg text-sm bg-blue-50 border-blue-200 font-medium"
             >
               {children.map(child => (
                 <option key={child.id} value={child.id}>{child.fullName}</option>
@@ -936,7 +803,7 @@ const StudentDashboard = ({ isParent = false }) => {
           <select
             value={period}
             onChange={(e) => setPeriod(e.target.value)}
-            className="px-3 py-2 text-sm border rounded-lg"
+            className="px-3 py-2 border rounded-lg text-sm"
           >
             <option value="day">Bugun</option>
             <option value="week">Bu hafta</option>
@@ -946,11 +813,48 @@ const StudentDashboard = ({ isParent = false }) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+      {/* To'lov ogohlantirishlari */}
+      {totalDebt > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-3">
+          <div className="w-10 h-10 bg-red-500 rounded-full flex items-center justify-center flex-shrink-0">
+            <AlertTriangle className="w-5 h-5 text-white" />
+          </div>
+          <div className="flex-1">
+            <p className="font-semibold text-red-800">Sizda qarzdorlik mavjud!</p>
+            <p className="text-sm text-red-600">
+              Jami qarz: <span className="font-bold">{formatMoney(totalDebt)}</span>. 
+              Iltimos, to'lovni amalga oshiring.
+            </p>
+          </div>
+          <Link to="/payments" className="px-4 py-2 bg-red-500 text-white rounded-lg text-sm font-medium hover:bg-red-600">
+            To'lash
+          </Link>
+        </div>
+      )}
+      
+      {!hasPaidThisMonth && totalDebt === 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 flex items-center gap-3">
+          <div className="w-10 h-10 bg-yellow-500 rounded-full flex items-center justify-center flex-shrink-0">
+            <Bell className="w-5 h-5 text-white" />
+          </div>
+          <div className="flex-1">
+            <p className="font-semibold text-yellow-800">Bu oyga to'lov qilish kerak</p>
+            <p className="text-sm text-yellow-600">
+              {new Date().toLocaleDateString('uz-UZ', { month: 'long', year: 'numeric' })} oyi uchun to'lov kutilmoqda.
+            </p>
+          </div>
+          <Link to="/payments" className="px-4 py-2 bg-yellow-500 text-white rounded-lg text-sm font-medium hover:bg-yellow-600">
+            To'lash
+          </Link>
+        </div>
+      )}
+
+      {/* Statistika kartalari */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card padding="p-5" className="bg-gradient-to-br from-blue-50 to-blue-100">
           <div className="text-center">
-            <div className="flex items-center justify-center mx-auto mb-3 bg-blue-500 w-14 h-14 rounded-2xl">
-              <Percent className="text-white w-7 h-7" />
+            <div className="w-14 h-14 bg-blue-500 rounded-2xl flex items-center justify-center mx-auto mb-3">
+              <Percent className="w-7 h-7 text-white" />
             </div>
             <p className="text-3xl font-bold text-blue-700">{gradeStats.average}%</p>
             <p className="text-sm text-blue-600">O'rtacha ball</p>
@@ -959,8 +863,8 @@ const StudentDashboard = ({ isParent = false }) => {
         
         <Card padding="p-5" className="bg-gradient-to-br from-green-50 to-green-100">
           <div className="text-center">
-            <div className="flex items-center justify-center mx-auto mb-3 bg-green-500 w-14 h-14 rounded-2xl">
-              <CheckCircle className="text-white w-7 h-7" />
+            <div className="w-14 h-14 bg-green-500 rounded-2xl flex items-center justify-center mx-auto mb-3">
+              <CheckCircle className="w-7 h-7 text-white" />
             </div>
             <p className="text-3xl font-bold text-green-700">{attendancePercent}%</p>
             <p className="text-sm text-green-600">Davomat</p>
@@ -969,8 +873,8 @@ const StudentDashboard = ({ isParent = false }) => {
         
         <Card padding="p-5" className="bg-gradient-to-br from-purple-50 to-purple-100">
           <div className="text-center">
-            <div className="flex items-center justify-center mx-auto mb-3 bg-purple-500 w-14 h-14 rounded-2xl">
-              <Award className="text-white w-7 h-7" />
+            <div className="w-14 h-14 bg-purple-500 rounded-2xl flex items-center justify-center mx-auto mb-3">
+              <Award className="w-7 h-7 text-white" />
             </div>
             <p className="text-3xl font-bold text-purple-700">{gradeStats.total}</p>
             <p className="text-sm text-purple-600">Baholar ({periodLabels[period]})</p>
@@ -980,7 +884,7 @@ const StudentDashboard = ({ isParent = false }) => {
         <Card padding="p-5" className={`bg-gradient-to-br ${paymentStats.pending > 0 ? 'from-red-50 to-red-100' : 'from-emerald-50 to-emerald-100'}`}>
           <div className="text-center">
             <div className={`w-14 h-14 ${paymentStats.pending > 0 ? 'bg-red-500' : 'bg-emerald-500'} rounded-2xl flex items-center justify-center mx-auto mb-3`}>
-              <CreditCard className="text-white w-7 h-7" />
+              <CreditCard className="w-7 h-7 text-white" />
             </div>
             <p className={`text-2xl font-bold ${paymentStats.pending > 0 ? 'text-red-700' : 'text-emerald-700'}`}>
               {formatMoney(paymentStats.pending || 0)}
@@ -992,20 +896,21 @@ const StudentDashboard = ({ isParent = false }) => {
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Oxirgi baholar */}
         <Card>
           <div className="flex items-center justify-between mb-4">
-            <h3 className="flex items-center gap-2 text-lg font-semibold">
+            <h3 className="text-lg font-semibold flex items-center gap-2">
               <Award className="w-5 h-5 text-primary-600" /> Oxirgi baholar
             </h3>
-            <Link to="/grades" className="text-sm text-primary-600 hover:underline">Barchasi</Link>
+            <Link to="/grades" className="text-primary-600 text-sm hover:underline">Barchasi</Link>
           </div>
           {grades.length > 0 ? (
             <div className="space-y-3">
               {grades.slice(-5).reverse().map(grade => {
                 const percent = Math.round((grade.grade / grade.maxGrade) * 100);
                 return (
-                  <div key={grade.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-50">
+                  <div key={grade.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                     <div>
                       <p className="font-medium">{grade.topic}</p>
                       <p className="text-xs text-gray-500">{formatDate(grade.createdAt)}</p>
@@ -1022,30 +927,31 @@ const StudentDashboard = ({ isParent = false }) => {
               })}
             </div>
           ) : (
-            <p className="py-8 text-center text-gray-500">Baholar yo'q</p>
+            <p className="text-gray-500 text-center py-8">Baholar yo'q</p>
           )}
         </Card>
 
+        {/* Davomat */}
         <Card>
           <div className="flex items-center justify-between mb-4">
-            <h3 className="flex items-center gap-2 text-lg font-semibold">
+            <h3 className="text-lg font-semibold flex items-center gap-2">
               <Calendar className="w-5 h-5 text-primary-600" /> Davomat ({periodLabels[period]})
             </h3>
-            <Link to="/attendance" className="text-sm text-primary-600 hover:underline">Barchasi</Link>
+            <Link to="/attendance" className="text-primary-600 text-sm hover:underline">Barchasi</Link>
           </div>
           <div className="grid grid-cols-3 gap-4">
-            <div className="p-4 text-center bg-green-50 rounded-xl">
-              <CheckCircle className="w-8 h-8 mx-auto mb-2 text-green-500" />
+            <div className="p-4 bg-green-50 rounded-xl text-center">
+              <CheckCircle className="w-8 h-8 text-green-500 mx-auto mb-2" />
               <p className="text-2xl font-bold text-green-700">{attendanceStats.present}</p>
               <p className="text-sm text-green-600">Keldi</p>
             </div>
-            <div className="p-4 text-center bg-red-50 rounded-xl">
-              <XCircle className="w-8 h-8 mx-auto mb-2 text-red-500" />
+            <div className="p-4 bg-red-50 rounded-xl text-center">
+              <XCircle className="w-8 h-8 text-red-500 mx-auto mb-2" />
               <p className="text-2xl font-bold text-red-700">{attendanceStats.absent}</p>
               <p className="text-sm text-red-600">Kelmadi</p>
             </div>
-            <div className="p-4 text-center bg-yellow-50 rounded-xl">
-              <Clock className="w-8 h-8 mx-auto mb-2 text-yellow-500" />
+            <div className="p-4 bg-yellow-50 rounded-xl text-center">
+              <Clock className="w-8 h-8 text-yellow-500 mx-auto mb-2" />
               <p className="text-2xl font-bold text-yellow-700">{attendanceStats.late}</p>
               <p className="text-sm text-yellow-600">Kechikdi</p>
             </div>
@@ -1053,23 +959,24 @@ const StudentDashboard = ({ isParent = false }) => {
         </Card>
       </div>
 
+      {/* Tezkor havolalar */}
       <Card>
-        <h3 className="mb-4 text-lg font-semibold">Tezkor havolalar</h3>
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-          <Link to="/grades" className="p-4 text-center transition bg-blue-50 rounded-xl hover:bg-blue-100">
-            <Award className="w-8 h-8 mx-auto mb-2 text-blue-600" />
+        <h3 className="text-lg font-semibold mb-4">Tezkor havolalar</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Link to="/grades" className="p-4 bg-blue-50 rounded-xl text-center hover:bg-blue-100 transition">
+            <Award className="w-8 h-8 text-blue-600 mx-auto mb-2" />
             <p className="font-medium text-blue-700">Baholarim</p>
           </Link>
-          <Link to="/attendance" className="p-4 text-center transition bg-green-50 rounded-xl hover:bg-green-100">
-            <Calendar className="w-8 h-8 mx-auto mb-2 text-green-600" />
+          <Link to="/attendance" className="p-4 bg-green-50 rounded-xl text-center hover:bg-green-100 transition">
+            <Calendar className="w-8 h-8 text-green-600 mx-auto mb-2" />
             <p className="font-medium text-green-700">Davomatim</p>
           </Link>
-          <Link to="/payments" className="p-4 text-center transition bg-purple-50 rounded-xl hover:bg-purple-100">
-            <CreditCard className="w-8 h-8 mx-auto mb-2 text-purple-600" />
+          <Link to="/payments" className="p-4 bg-purple-50 rounded-xl text-center hover:bg-purple-100 transition">
+            <CreditCard className="w-8 h-8 text-purple-600 mx-auto mb-2" />
             <p className="font-medium text-purple-700">To'lovlarim</p>
           </Link>
-          <Link to="/messages" className="p-4 text-center transition bg-orange-50 rounded-xl hover:bg-orange-100">
-            <Bell className="w-8 h-8 mx-auto mb-2 text-orange-600" />
+          <Link to="/messages" className="p-4 bg-orange-50 rounded-xl text-center hover:bg-orange-100 transition">
+            <Bell className="w-8 h-8 text-orange-600 mx-auto mb-2" />
             <p className="font-medium text-orange-700">Xabarlar</p>
           </Link>
         </div>
