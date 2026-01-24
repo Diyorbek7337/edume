@@ -268,7 +268,7 @@ const Teachers = () => {
                       <Trash2 className="w-4 h-4" />
                     </button>
                   )}
-                  
+                  </button>
                 </div>
               </Card>
             );

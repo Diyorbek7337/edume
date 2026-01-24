@@ -2,11 +2,10 @@ import { useState, useEffect } from 'react';
 import { 
   Search, Plus, CreditCard, CheckCircle, Clock, AlertTriangle, Eye, 
   Users, Wallet, TrendingUp, Filter, Calendar, History, ArrowRight,
-  DollarSign, PieChart, AlertCircle, ChevronDown, ChevronUp, Receipt,
-  Bell, Send, MessageCircle, Phone
+  DollarSign, PieChart, AlertCircle, ChevronDown, ChevronUp, Receipt
 } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Avatar, Table, Modal, Loading } from '../components/common';
-import { paymentsAPI, studentsAPI, groupsAPI, settingsAPI, messagesAPI } from '../services/api';
+import { paymentsAPI, studentsAPI, groupsAPI, settingsAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
 import { formatMoney, formatDate } from '../utils/helpers';
@@ -24,11 +23,9 @@ const Payments = () => {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showCreateBillModal, setShowCreateBillModal] = useState(false);
-  const [showReminderModal, setShowReminderModal] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [selectedBill, setSelectedBill] = useState(null);
   const [formLoading, setFormLoading] = useState(false);
-  const [reminderLoading, setReminderLoading] = useState(false);
   const [settings, setSettings] = useState({});
   const [selectedMonth, setSelectedMonth] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -46,13 +43,6 @@ const Payments = () => {
     studentId: '',
     month: '',
     totalAmount: ''
-  });
-
-  const [reminderForm, setReminderForm] = useState({
-    sendToProfile: true,
-    sendToTelegram: true,
-    sendToSMS: false,
-    customMessage: ''
   });
 
   const isAdmin = role === ROLES.ADMIN || role === ROLES.DIRECTOR;
@@ -511,123 +501,6 @@ const Payments = () => {
     }
   };
 
-  // To'lov eslatmasi yuborish
-  const openReminderModal = (student) => {
-    setSelectedStudent(student);
-    setReminderForm({
-      sendToProfile: true,
-      sendToTelegram: !!student.parentTelegram,
-      sendToSMS: false,
-      customMessage: ''
-    });
-    setShowReminderModal(true);
-  };
-
-  const handleSendReminder = async () => {
-    if (!selectedStudent) return;
-    
-    setReminderLoading(true);
-    try {
-      const debt = getStudentTotalDebt(selectedStudent.id);
-      const group = groups.find(g => g.id === selectedStudent.groupId);
-      
-      // Standart xabar matni
-      const defaultMessage = `Hurmatli ${selectedStudent.parentName || selectedStudent.fullName}!\n\n` +
-        `${selectedStudent.fullName} ning "${group?.name || 'Guruh'}" guruhidagi to'lov muddati o'tganligini ma'lum qilamiz.\n\n` +
-        `💰 Qarz miqdori: ${formatMoney(debt)}\n` +
-        `📅 Sana: ${new Date().toLocaleDateString('uz-UZ')}\n\n` +
-        `Iltimos, to'lovni amalga oshiring.\n\n` +
-        `Hurmat bilan,\n${settings.centerName || "O'quv markazi"}`;
-      
-      const message = reminderForm.customMessage || defaultMessage;
-      let sentCount = 0;
-      
-      // 1. Profilga xabar yuborish (Messages collection)
-      if (reminderForm.sendToProfile) {
-        await messagesAPI.create({
-          title: "💰 To'lov eslatmasi",
-          content: message,
-          type: 'payment_reminder',
-          priority: 'high',
-          recipientType: 'student',
-          recipientId: selectedStudent.id,
-          recipientIds: [selectedStudent.id],
-          senderId: userData?.id,
-          senderName: userData?.fullName,
-          debt: debt,
-          read: false
-        });
-        sentCount++;
-        
-        // Agar ota-ona bog'langan bo'lsa, ularga ham
-        if (selectedStudent.parentId) {
-          await messagesAPI.create({
-            title: "💰 To'lov eslatmasi",
-            content: message,
-            type: 'payment_reminder',
-            priority: 'high',
-            recipientType: 'parent',
-            recipientId: selectedStudent.parentId,
-            recipientIds: [selectedStudent.parentId],
-            senderId: userData?.id,
-            senderName: userData?.fullName,
-            studentId: selectedStudent.id,
-            studentName: selectedStudent.fullName,
-            debt: debt,
-            read: false
-          });
-        }
-      }
-      
-      // 2. Telegramga yuborish
-      if (reminderForm.sendToTelegram && selectedStudent.parentTelegram) {
-        // Telegram bot orqali yuborish (keyinroq qo'shiladi)
-        // Hozircha faqat link yaratamiz
-        const telegramLink = selectedStudent.parentTelegram.match(/^\d+$/)
-          ? `https://t.me/+${selectedStudent.parentTelegram}`
-          : `https://t.me/${selectedStudent.parentTelegram.replace('@', '')}`;
-        
-        // Clipboard ga nusxalash
-        const telegramMessage = message.replace(/\n/g, '%0A');
-        await navigator.clipboard.writeText(message);
-        
-        toast.info(
-          <div>
-            <p>Xabar nusxalandi!</p>
-            <a href={telegramLink} target="_blank" rel="noopener noreferrer" className="text-blue-500 underline">
-              Telegram ochish →
-            </a>
-          </div>,
-          { autoClose: 5000 }
-        );
-        sentCount++;
-      }
-      
-      // 3. SMS yuborish (keyinroq qo'shiladi)
-      if (reminderForm.sendToSMS && selectedStudent.parentPhone) {
-        // SMS API integratsiya qilinadi
-        toast.info("SMS funksiyasi tez orada qo'shiladi");
-      }
-      
-      // O'quvchiga eslatma yuborilganini belgilash
-      await studentsAPI.update(selectedStudent.id, {
-        lastReminderSent: new Date().toISOString(),
-        reminderCount: (selectedStudent.reminderCount || 0) + 1
-      });
-      
-      setShowReminderModal(false);
-      setSelectedStudent(null);
-      toast.success(`Eslatma ${sentCount} ta kanalga yuborildi!`);
-      fetchData();
-      
-    } catch (err) {
-      console.error(err);
-      toast.error("Xatolik yuz berdi");
-    } finally {
-      setReminderLoading(false);
-    }
-  };
-
   // Yangi oylik hisob yaratish
   const handleCreateBill = async (e) => {
     e.preventDefault();
@@ -949,33 +822,20 @@ const Payments = () => {
                     </div>
                   </div>
 
-                  {/* Tugmalar */}
+                  {/* To'lov tugmasi */}
                   {isAdmin && status.debt > 0 && (
-                    <div className="flex gap-2">
-                      <Button 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedStudent(student);
-                          setPaymentForm({ ...paymentForm, amount: '' });
-                          setShowPaymentModal(true);
-                        }}
-                        className="flex-1"
-                      >
-                        <Plus className="w-4 h-4 mr-2" />
-                        To'lov
-                      </Button>
-                      <Button 
-                        variant="outline"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openReminderModal(student);
-                        }}
-                        className="px-3"
-                        title="Eslatma yuborish"
-                      >
-                        <Bell className="w-4 h-4" />
-                      </Button>
-                    </div>
+                    <Button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedStudent(student);
+                        setPaymentForm({ ...paymentForm, amount: '' });
+                        setShowPaymentModal(true);
+                      }}
+                      className="w-full"
+                    >
+                      <Plus className="w-4 h-4 mr-2" />
+                      To'lov qabul qilish
+                    </Button>
                   )}
                 </div>
               )}
@@ -1343,144 +1203,6 @@ const Payments = () => {
             </Button>
           </div>
         </form>
-      </Modal>
-
-      {/* Eslatma yuborish modali */}
-      <Modal
-        isOpen={showReminderModal}
-        onClose={() => {
-          setShowReminderModal(false);
-          setSelectedStudent(null);
-        }}
-        title="To'lov eslatmasi yuborish"
-      >
-        {selectedStudent && (
-          <div className="space-y-4">
-            {/* O'quvchi ma'lumotlari */}
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <div className="flex items-center gap-3 mb-3">
-                <Avatar name={selectedStudent.fullName} size="md" />
-                <div>
-                  <h3 className="font-semibold">{selectedStudent.fullName}</h3>
-                  <p className="text-sm text-gray-500">
-                    {groups.find(g => g.id === selectedStudent.groupId)?.name}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center justify-between p-3 bg-red-50 rounded-lg">
-                <span className="text-red-700">Qarz miqdori:</span>
-                <span className="text-xl font-bold text-red-700">
-                  {formatMoney(getStudentTotalDebt(selectedStudent.id))}
-                </span>
-              </div>
-            </div>
-
-            {/* Yuborish kanallari */}
-            <div className="space-y-3">
-              <label className="block text-sm font-medium text-gray-700">Qayerga yuborish:</label>
-              
-              {/* Profil */}
-              <label className="flex items-center gap-3 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
-                <input
-                  type="checkbox"
-                  checked={reminderForm.sendToProfile}
-                  onChange={(e) => setReminderForm({ ...reminderForm, sendToProfile: e.target.checked })}
-                  className="w-5 h-5 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                />
-                <MessageCircle className="w-5 h-5 text-blue-500" />
-                <div className="flex-1">
-                  <p className="font-medium">Profil (Xabarlar)</p>
-                  <p className="text-sm text-gray-500">O'quvchi va ota-ona profiliga</p>
-                </div>
-                <CheckCircle className="w-5 h-5 text-green-500" />
-              </label>
-
-              {/* Telegram */}
-              <label className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${selectedStudent.parentTelegram ? 'hover:bg-gray-50' : 'opacity-50'}`}>
-                <input
-                  type="checkbox"
-                  checked={reminderForm.sendToTelegram}
-                  onChange={(e) => setReminderForm({ ...reminderForm, sendToTelegram: e.target.checked })}
-                  disabled={!selectedStudent.parentTelegram}
-                  className="w-5 h-5 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                />
-                <Send className="w-5 h-5 text-blue-400" />
-                <div className="flex-1">
-                  <p className="font-medium">Telegram</p>
-                  <p className="text-sm text-gray-500">
-                    {selectedStudent.parentTelegram || "Telegram bog'lanmagan"}
-                  </p>
-                </div>
-                {selectedStudent.parentTelegram && <CheckCircle className="w-5 h-5 text-green-500" />}
-              </label>
-
-              {/* SMS */}
-              <label className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${selectedStudent.parentPhone ? 'hover:bg-gray-50' : 'opacity-50'}`}>
-                <input
-                  type="checkbox"
-                  checked={reminderForm.sendToSMS}
-                  onChange={(e) => setReminderForm({ ...reminderForm, sendToSMS: e.target.checked })}
-                  disabled={!selectedStudent.parentPhone}
-                  className="w-5 h-5 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                />
-                <Phone className="w-5 h-5 text-green-500" />
-                <div className="flex-1">
-                  <p className="font-medium">SMS</p>
-                  <p className="text-sm text-gray-500">
-                    {selectedStudent.parentPhone || "Telefon kiritilmagan"}
-                    {selectedStudent.parentPhone && <span className="text-yellow-600 ml-2">(Tez kunda)</span>}
-                  </p>
-                </div>
-              </label>
-            </div>
-
-            {/* Maxsus xabar */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Maxsus xabar (ixtiyoriy)
-              </label>
-              <textarea
-                value={reminderForm.customMessage}
-                onChange={(e) => setReminderForm({ ...reminderForm, customMessage: e.target.value })}
-                placeholder="Bo'sh qoldirsangiz, standart xabar yuboriladi..."
-                rows={4}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-              />
-            </div>
-
-            {/* Oldingi eslatmalar */}
-            {selectedStudent.lastReminderSent && (
-              <div className="p-3 bg-yellow-50 rounded-lg text-sm">
-                <p className="text-yellow-800">
-                  <strong>Oxirgi eslatma:</strong> {formatDate(selectedStudent.lastReminderSent)}
-                  {selectedStudent.reminderCount && ` (Jami: ${selectedStudent.reminderCount} marta)`}
-                </p>
-              </div>
-            )}
-
-            {/* Tugmalar */}
-            <div className="flex gap-2 pt-4 border-t">
-              <Button 
-                onClick={handleSendReminder}
-                className="flex-1" 
-                loading={reminderLoading}
-                disabled={!reminderForm.sendToProfile && !reminderForm.sendToTelegram && !reminderForm.sendToSMS}
-              >
-                <Bell className="w-4 h-4 mr-2" />
-                Eslatma yuborish
-              </Button>
-              <Button 
-                variant="outline" 
-                onClick={() => {
-                  setShowReminderModal(false);
-                  setSelectedStudent(null);
-                }}
-              >
-                Bekor qilish
-              </Button>
-            </div>
-          </div>
-        )}
       </Modal>
     </div>
   );
