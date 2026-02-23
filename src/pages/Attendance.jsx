@@ -111,11 +111,14 @@ const Attendance = () => {
         attendanceAPI.getByGroupAndDate(selectedGroup, formatDateISO(selectedDate))
       ]);
       
+      // Faqat faol o'quvchilar (graduated emas)
+      const activeStudents = studentsData.filter(s => s.status !== 'graduated');
+      
       // O'quvchi/Ota-ona faqat o'zini ko'radi
       if (isStudentOrParent && studentData) {
-        setStudents(studentsData.filter(s => s.id === studentData.id));
+        setStudents(activeStudents.filter(s => s.id === studentData.id));
       } else {
-        setStudents(studentsData);
+        setStudents(activeStudents);
       }
       
       const attendanceMap = {};

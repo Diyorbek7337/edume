@@ -275,31 +275,6 @@ export const usersAPI = {
   },
 };
 
-export const feedbackAPI = {
-  getAll: async () => {
-    try {
-      const snapshot = await getDocs(collection(db, 'feedback'));
-      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    } catch (err) {
-      console.error('feedback error:', err);
-      return [];
-    }
-  },
-
-  create: async (data) => {
-    const docRef = await addDoc(collection(db, 'feedback'), { ...data, status: 'pending', createdAt: serverTimestamp() });
-    return { id: docRef.id, ...data };
-  },
-
-  update: async (id, data) => {
-    await updateDoc(doc(db, 'feedback', id), { ...data, updatedAt: serverTimestamp() });
-    return { id, ...data };
-  },
-
-  updateStatus: async (id, status, response = '') => {
-    await updateDoc(doc(db, 'feedback', id), { status, response, respondedAt: serverTimestamp() });
-  },
-};
 // ==================== STUDENTS (Center-based) ====================
 export const studentsAPI = {
   getAll: async () => {
@@ -1276,6 +1251,32 @@ export const rewardsAPI = {
       updatedAt: serverTimestamp()
     });
     return { id, ...data };
+  },
+};
+
+export const feedbackAPI = {
+  getAll: async () => {
+    try {
+      const snapshot = await getDocs(collection(db, 'feedback'));
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err) {
+      console.error('feedback error:', err);
+      return [];
+    }
+  },
+
+  create: async (data) => {
+    const docRef = await addDoc(collection(db, 'feedback'), { ...data, status: 'pending', createdAt: serverTimestamp() });
+    return { id: docRef.id, ...data };
+  },
+
+  update: async (id, data) => {
+    await updateDoc(doc(db, 'feedback', id), { ...data, updatedAt: serverTimestamp() });
+    return { id, ...data };
+  },
+
+  updateStatus: async (id, status, response = '') => {
+    await updateDoc(doc(db, 'feedback', id), { status, response, respondedAt: serverTimestamp() });
   },
 };
 

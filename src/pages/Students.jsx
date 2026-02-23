@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Edit, Trash2, Eye, Download, Upload, Copy, Check, Gift, AlertTriangle, FileSpreadsheet } from 'lucide-react';
+import { Search, Plus, Edit, Trash2, Eye, Download, Upload, Copy, Check, Gift, AlertTriangle, FileSpreadsheet, GraduationCap } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Avatar, Table, Modal, Loading, EmptyState } from '../components/common';
 import { studentsAPI, groupsAPI, usersAPI, settingsAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -17,6 +17,7 @@ const Students = () => {
   const fileInputRef = useRef(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterGroup, setFilterGroup] = useState('');
+  const [filterStatus, setFilterStatus] = useState('active'); // active, graduated, all
   
   const [showAddModal, setShowAddModal] = useState(false);
   const [showViewModal, setShowViewModal] = useState(false);
@@ -25,6 +26,7 @@ const Students = () => {
   const [showCredentialsModal, setShowCredentialsModal] = useState(false);
   const [showLimitModal, setShowLimitModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showGraduateModal, setShowGraduateModal] = useState(false);
   const [importData, setImportData] = useState([]);
   const [importLoading, setImportLoading] = useState(false);
   
@@ -77,7 +79,17 @@ const Students = () => {
   const filteredStudents = students.filter(s => {
     const matchesSearch = s.fullName?.toLowerCase().includes(searchQuery.toLowerCase()) || s.phone?.includes(searchQuery);
     const matchesGroup = !filterGroup || s.groupId === filterGroup;
-    return matchesSearch && matchesGroup;
+    
+    // Status bo'yicha filter
+    let matchesStatus = true;
+    if (filterStatus === 'active') {
+      matchesStatus = s.status === 'active';
+    } else if (filterStatus === 'graduated') {
+      matchesStatus = s.status === 'graduated';
+    }
+    // 'all' bo'lsa hamma ko'rsatiladi
+    
+    return matchesSearch && matchesGroup && matchesStatus;
   });
 
   const resetForm = () => { 
@@ -344,6 +356,64 @@ const Students = () => {
       toast.error("O'chirishda xatolik"); 
     }
     finally { setFormLoading(false); }
+  };
+
+  // Kursni bitirdi - graduated statusiga o'tkazish
+  const handleGraduate = async () => {
+    if (!selectedStudent) return;
+    
+    setFormLoading(true);
+    try {
+      await studentsAPI.update(selectedStudent.id, {
+        status: 'graduated',
+        graduatedAt: new Date().toISOString(),
+        graduatedBy: userData?.id
+      });
+      
+      // Guruh studentsCount yangilash (faol o'quvchilar soni kamayadi)
+      if (selectedStudent.groupId) {
+        await updateGroupStudentsCount(selectedStudent.groupId, false);
+      }
+      
+      // Local state yangilash
+      setStudents(students.map(s => 
+        s.id === selectedStudent.id 
+          ? { ...s, status: 'graduated', graduatedAt: new Date().toISOString() }
+          : s
+      ));
+      
+      setShowGraduateModal(false);
+      setSelectedStudent(null);
+      toast.success(`${selectedStudent.fullName} kursni muvaffaqiyatli bitirdi! 🎓`);
+    } catch (err) {
+      console.error(err);
+      toast.error("Xatolik yuz berdi");
+    } finally {
+      setFormLoading(false);
+    }
+  };
+
+  // Qayta faollashtirish
+  const handleReactivate = async (student) => {
+    try {
+      await studentsAPI.update(student.id, {
+        status: 'active',
+        reactivatedAt: new Date().toISOString()
+      });
+      
+      if (student.groupId) {
+        await updateGroupStudentsCount(student.groupId, true);
+      }
+      
+      setStudents(students.map(s => 
+        s.id === student.id ? { ...s, status: 'active' } : s
+      ));
+      
+      toast.success(`${student.fullName} qayta faollashtirildi`);
+    } catch (err) {
+      console.error(err);
+      toast.error("Xatolik yuz berdi");
+    }
   };
 
   const openEditModal = (student) => {
@@ -613,7 +683,16 @@ const Students = () => {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
             <input type="text" placeholder="Qidirish..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500" />
           </div>
-          <Select value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)} options={groups.map(g => ({ value: g.id, label: g.name }))} placeholder="Barcha guruhlar" className="w-full md:w-64" />
+          <Select value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)} options={groups.map(g => ({ value: g.id, label: g.name }))} placeholder="Barcha guruhlar" className="w-full md:w-48" />
+          <select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+            className="px-3 py-2 border rounded-lg text-sm w-full md:w-40"
+          >
+            <option value="active">Faol</option>
+            <option value="graduated">Bitirganlar</option>
+            <option value="all">Barchasi</option>
+          </select>
         </div>
       </Card>
 
@@ -625,13 +704,14 @@ const Students = () => {
                 <Table.Header>O'quvchi</Table.Header>
                 <Table.Header>Telefon</Table.Header>
                 <Table.Header>Guruh</Table.Header>
+                <Table.Header>Holat</Table.Header>
                 <Table.Header>Ota-ona</Table.Header>
                 <Table.Header className="text-right">Amallar</Table.Header>
               </Table.Row>
             </Table.Head>
             <Table.Body>
               {filteredStudents.map(student => (
-                <Table.Row key={student.id}>
+                <Table.Row key={student.id} className={student.status === 'graduated' ? 'bg-gray-50' : ''}>
                   <Table.Cell>
                     <div className="flex items-center gap-3">
                       <Avatar name={student.fullName} />
@@ -643,6 +723,16 @@ const Students = () => {
                   </Table.Cell>
                   <Table.Cell><a href={`tel:${student.phone}`} className="text-primary-600">{formatPhone(student.phone)}</a></Table.Cell>
                   <Table.Cell><Badge variant="primary">{student.groupName || '-'}</Badge></Table.Cell>
+                  <Table.Cell>
+                    {student.status === 'graduated' ? (
+                      <Badge variant="default" className="bg-purple-100 text-purple-700">
+                        <GraduationCap className="w-3 h-3 mr-1" />
+                        Bitirgan
+                      </Badge>
+                    ) : (
+                      <Badge variant="success">Faol</Badge>
+                    )}
+                  </Table.Cell>
                   <Table.Cell>
                     <p className="text-sm">{student.parentName}</p>
                     <a href={`tel:${student.parentPhone}`} className="text-sm text-primary-600">{formatPhone(student.parentPhone)}</a>
@@ -662,12 +752,30 @@ const Students = () => {
                   </Table.Cell>
                   <Table.Cell className="text-right">
                     <div className="flex justify-end gap-1">
-                      <button onClick={() => { setSelectedStudent(student); setShowViewModal(true); }} className="p-2 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg"><Eye className="w-4 h-4" /></button>
-                      {isAdmin && (
-                        <button onClick={() => openEditModal(student)} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"><Edit className="w-4 h-4" /></button>
+                      <button onClick={() => { setSelectedStudent(student); setShowViewModal(true); }} className="p-2 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg" title="Ko'rish"><Eye className="w-4 h-4" /></button>
+                      {isAdmin && student.status === 'active' && (
+                        <>
+                          <button onClick={() => openEditModal(student)} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg" title="Tahrirlash"><Edit className="w-4 h-4" /></button>
+                          <button 
+                            onClick={() => { setSelectedStudent(student); setShowGraduateModal(true); }} 
+                            className="p-2 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded-lg"
+                            title="Kursni bitirdi"
+                          >
+                            <GraduationCap className="w-4 h-4" />
+                          </button>
+                        </>
+                      )}
+                      {isAdmin && student.status === 'graduated' && (
+                        <button 
+                          onClick={() => handleReactivate(student)} 
+                          className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg"
+                          title="Qayta faollashtirish"
+                        >
+                          <Check className="w-4 h-4" />
+                        </button>
                       )}
                       {isDirector && (
-                        <button onClick={() => { setSelectedStudent(student); setShowDeleteModal(true); }} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"><Trash2 className="w-4 h-4" /></button>
+                        <button onClick={() => { setSelectedStudent(student); setShowDeleteModal(true); }} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="O'chirish"><Trash2 className="w-4 h-4" /></button>
                       )}
                     </div>
                   </Table.Cell>
@@ -1045,6 +1153,51 @@ const Students = () => {
             </Button>
           </div>
         </div>
+      </Modal>
+
+      {/* Graduate Modal */}
+      <Modal 
+        isOpen={showGraduateModal} 
+        onClose={() => { setShowGraduateModal(false); setSelectedStudent(null); }} 
+        title="Kursni bitirish"
+      >
+        {selectedStudent && (
+          <div className="space-y-4">
+            <div className="text-center py-4">
+              <GraduationCap className="w-16 h-16 text-purple-500 mx-auto mb-4" />
+              <h3 className="text-lg font-semibold">{selectedStudent.fullName}</h3>
+              <p className="text-gray-500">{selectedStudent.groupName}</p>
+            </div>
+            
+            <div className="bg-purple-50 p-4 rounded-lg text-sm text-purple-800">
+              <p className="font-medium mb-2">Bu o'quvchi kursni bitiradi:</p>
+              <ul className="list-disc list-inside space-y-1 text-purple-600">
+                <li>To'lovlar olinmaydi</li>
+                <li>Davomat olinmaydi</li>
+                <li>Jadvalda ko'rinmaydi</li>
+                <li>Statistikada "Bitirganlar" bo'limida ko'rinadi</li>
+              </ul>
+            </div>
+
+            <div className="flex gap-2 pt-4 border-t">
+              <Button
+                variant="outline"
+                onClick={() => { setShowGraduateModal(false); setSelectedStudent(null); }}
+                className="flex-1"
+              >
+                Bekor qilish
+              </Button>
+              <Button
+                onClick={handleGraduate}
+                loading={formLoading}
+                className="flex-1 bg-purple-600 hover:bg-purple-700"
+              >
+                <GraduationCap className="w-4 h-4 mr-2" />
+                Bitirdi 🎓
+              </Button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

@@ -6,7 +6,7 @@ import {
   Bell, Send, MessageCircle, Phone
 } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Avatar, Table, Modal, Loading } from '../components/common';
-import { paymentsAPI, studentsAPI, groupsAPI, settingsAPI, messagesAPI } from '../services/api';
+import { paymentsAPI, studentsAPI, groupsAPI, settingsAPI, messagesAPI, teachersAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
 import { formatMoney, formatDate } from '../utils/helpers';
@@ -32,6 +32,7 @@ const Payments = () => {
   const [settings, setSettings] = useState({});
   const [selectedMonth, setSelectedMonth] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [filterGroup, setFilterGroup] = useState('all');
   const [expandedStudents, setExpandedStudents] = useState({});
 
   const [paymentForm, setPaymentForm] = useState({
@@ -56,6 +57,7 @@ const Payments = () => {
   });
 
   const isAdmin = role === ROLES.ADMIN || role === ROLES.DIRECTOR;
+  const isTeacher = role === ROLES.TEACHER;
   const isStudentOrParent = role === ROLES.STUDENT || role === ROLES.PARENT;
 
   useEffect(() => {
@@ -66,24 +68,159 @@ const Payments = () => {
 
   const fetchData = async () => {
     try {
-      const [studentsData, groupsData, paymentsData, billsData, settingsData] = await Promise.all([
-        studentsAPI.getAll(),
-        groupsAPI.getAll(),
-        paymentsAPI.getAll(),
-        paymentsAPI.getMonthlyBills ? paymentsAPI.getMonthlyBills() : [],
-        settingsAPI.get()
-      ]);
+      let studentsData = [];
+      let groupsData = [];
+      let paymentsData = [];
+      let billsData = [];
+      
+      const settingsData = await settingsAPI.get();
+      setSettings(settingsData || {});
 
-      setStudents(studentsData.filter(s => s.status === 'active'));
+      if (isStudentOrParent) {
+        // O'quvchi yoki ota-ona - faqat o'z ma'lumotlarini olish
+        let studentId = null;
+        let student = null;
+        
+        // Barcha studentlarni olish
+        const allStudents = await studentsAPI.getAll();
+        
+        if (role === ROLES.STUDENT) {
+          // O'quvchi - email orqali topish yoki userData.studentId
+          if (userData?.email) {
+            student = allStudents.find(s => s.email === userData.email);
+          }
+          if (!student && userData?.studentId) {
+            student = allStudents.find(s => s.id === userData.studentId);
+          }
+          if (!student && userData?.phone) {
+            student = allStudents.find(s => s.phone === userData.phone);
+          }
+        } else if (role === ROLES.PARENT) {
+          // Ota-ona - childId yoki phone orqali
+          if (userData?.childId) {
+            student = allStudents.find(s => s.id === userData.childId);
+          }
+          if (!student && userData?.childIds?.length > 0) {
+            student = allStudents.find(s => s.id === userData.childIds[0]);
+          }
+          if (!student && userData?.phone) {
+            // Ota-ona telefoni orqali bolani topish
+            student = allStudents.find(s => s.parentPhone === userData.phone);
+          }
+        }
+        
+        console.log('Student/Parent found:', student?.fullName, 'id:', student?.id);
+        
+        if (student) {
+          studentId = student.id;
+          studentsData = [student];
+          
+          // Guruhni olish
+          const allGroups = await groupsAPI.getAll();
+          if (student.groupId) {
+            const group = allGroups.find(g => g.id === student.groupId);
+            groupsData = group ? [group] : [];
+          }
+          
+          // Barcha to'lovlar va bills
+          const allPayments = await paymentsAPI.getAll();
+          paymentsData = allPayments.filter(p => p.studentId === studentId);
+          
+          try {
+            const allBills = await paymentsAPI.getMonthlyBills();
+            billsData = (allBills || []).filter(b => b.studentId === studentId);
+          } catch (e) {
+            billsData = [];
+          }
+          
+          console.log('Student payments:', paymentsData.length, 'bills:', billsData.length);
+        }
+      } else if (isTeacher) {
+        // O'qituvchi - faqat o'z guruhlari o'quvchilarini
+        const userId = userData?.id;
+        const userEmail = userData?.email;
+        const userPhone = userData?.phone;
+        const userFullName = userData?.fullName;
+        console.log('Teacher - userId:', userId, 'email:', userEmail, 'name:', userFullName);
+        
+        // Teachers jadvalidan o'qituvchini topish - email, phone yoki ism bo'yicha
+        const allTeachers = await teachersAPI.getAll();
+        console.log('All teachers:', allTeachers.map(t => ({ id: t.id, email: t.email, name: t.fullName })));
+        
+        let teacher = allTeachers.find(t => t.email === userEmail);
+        if (!teacher && userPhone) {
+          teacher = allTeachers.find(t => t.phone === userPhone);
+        }
+        if (!teacher && userFullName) {
+          teacher = allTeachers.find(t => t.fullName === userFullName);
+        }
+        
+        const teacherId = teacher?.id;
+        console.log('Found teacher in teachers collection:', teacher?.fullName, 'teacherId:', teacherId);
+        
+        // Barcha guruhlarni olib, teacher bo'yicha filter
+        const allGroups = await groupsAPI.getAll();
+        console.log('All groups teacherIds:', allGroups.map(g => ({ name: g.name, teacherId: g.teacherId })));
+        
+        // teacherId - teachers jadvalidagi ID bo'lishi kerak
+        groupsData = allGroups.filter(g => 
+          g.teacherId === teacherId ||  // Teachers ID
+          g.teacherId === userId ||     // Users ID (eski ma'lumotlar uchun)
+          g.teacherEmail === userEmail  // Email bo'yicha
+        );
+        
+        console.log('Teacher groups:', groupsData.length, groupsData.map(g => g.name));
+        
+        const groupIds = groupsData.map(g => g.id);
+        
+        // Barcha studentlarni olib, guruh bo'yicha filter
+        const allStudents = await studentsAPI.getAll();
+        studentsData = groupIds.length > 0 
+          ? allStudents.filter(s => groupIds.includes(s.groupId) && s.status === 'active')
+          : []; // Agar guruh yo'q bo'lsa, o'quvchilar ham bo'lmasin
+        
+        console.log('Teacher students:', studentsData.length);
+        
+        const studentIds = studentsData.map(s => s.id);
+        
+        // To'lovlarni filter qilish
+        const allPayments = await paymentsAPI.getAll();
+        paymentsData = allPayments.filter(p => studentIds.includes(p.studentId));
+        
+        try {
+          const allBills = await paymentsAPI.getMonthlyBills();
+          billsData = (allBills || []).filter(b => studentIds.includes(b.studentId));
+        } catch (e) {
+          billsData = [];
+        }
+      } else {
+        // Admin/Direktor - hamma ma'lumotlar
+        const [allStudents, allGroups, allPayments] = await Promise.all([
+          studentsAPI.getAll(),
+          groupsAPI.getAll(),
+          paymentsAPI.getAll()
+        ]);
+        
+        studentsData = allStudents.filter(s => s.status === 'active');
+        groupsData = allGroups;
+        paymentsData = allPayments;
+        
+        try {
+          billsData = await paymentsAPI.getMonthlyBills();
+        } catch (e) {
+          billsData = [];
+        }
+      }
+
+      setStudents(studentsData);
       setGroups(groupsData);
       setPayments(paymentsData);
-      setSettings(settingsData || {});
       
       // Eski to'lovlarni monthly_bills formatiga o'tkazish
-      const convertedBills = convertOldPaymentsToBills(paymentsData, billsData, studentsData, groupsData, settingsData);
+      const convertedBills = convertOldPaymentsToBills(paymentsData, billsData || [], studentsData, groupsData, settingsData);
       setMonthlyBills(convertedBills);
     } catch (err) {
-      console.error(err);
+      console.error('fetchData error:', err);
       toast.error("Ma'lumotlarni yuklashda xatolik");
     } finally {
       setLoading(false);
@@ -92,13 +229,15 @@ const Payments = () => {
 
   // Eski payments dan monthly_bills yaratish
   const convertOldPaymentsToBills = (oldPayments, existingBills, studentsData, groupsData, settingsData) => {
+    console.log('convertOldPaymentsToBills - payments:', oldPayments.length, 'existingBills:', existingBills?.length);
+    
     const billsMap = {};
     
     // To'lovlarni ID bo'yicha indekslash (duplikatlarni oldini olish)
     const processedPaymentIds = new Set();
     
     // Avval mavjud monthly_bills ni qo'shish
-    existingBills.forEach(bill => {
+    (existingBills || []).forEach(bill => {
       const key = `${bill.studentId}-${bill.month}`;
       billsMap[key] = { ...bill };
       
@@ -114,13 +253,22 @@ const Payments = () => {
     
     // Eski to'lovlarni tekshirish
     oldPayments.forEach(payment => {
-      if (!payment.studentId || payment.type === 'expense') return;
+      if (!payment.studentId || payment.type === 'expense') {
+        console.log('Skipping payment - no studentId or expense:', payment.id);
+        return;
+      }
       
       // Agar bu to'lov allaqachon monthly_bills ga qo'shilgan bo'lsa, o'tkazib yuborish
-      if (processedPaymentIds.has(payment.id)) return;
+      if (processedPaymentIds.has(payment.id)) {
+        console.log('Skipping payment - already processed:', payment.id);
+        return;
+      }
       
       // MUHIM: Yangi tizimda qo'shilgan to'lovlarni o'tkazib yuborish
-      if (payment.alreadyInMonthlyBill === true) return;
+      if (payment.alreadyInMonthlyBill === true) {
+        console.log('Skipping payment - alreadyInMonthlyBill:', payment.id);
+        return;
+      }
       
       // To'lov sanasidan oyni aniqlash
       let paymentDate;
@@ -684,17 +832,22 @@ const Payments = () => {
     
     let totalDebt = 0;
     let totalPaid = 0;
-    let debtors = 0;
-    let partialPaid = 0;
-    let fullyPaid = 0;
+    let debtors = 0;      // Qarz bor (to'lamagan)
+    let partialPaid = 0;  // Qisman to'lagan
+    let fullyPaid = 0;    // To'liq to'lagan
 
     students.forEach(student => {
       const status = getStudentPaymentStatus(student);
       totalDebt += status.debt;
 
-      if (status.status === 'paid') fullyPaid++;
-      else if (status.status === 'partial') partialPaid++;
-      else if (status.status === 'debtor') debtors++;
+      if (status.status === 'paid') {
+        fullyPaid++;
+      } else if (status.status === 'partial') {
+        partialPaid++;
+      } else if (status.debt > 0) {
+        // debtor yoki pending - qarz bor bo'lsa qarzdor
+        debtors++;
+      }
     });
 
     // Bu oyda to'langan summa
@@ -708,14 +861,27 @@ const Payments = () => {
 
   // Filtrlangan o'quvchilar
   const filteredStudents = students.filter(student => {
+    // Qidiruv bo'yicha
     const matchesSearch = student.fullName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       student.phone?.includes(searchQuery);
     
     if (!matchesSearch) return false;
 
+    // Guruh bo'yicha filter
+    if (filterGroup !== 'all' && student.groupId !== filterGroup) {
+      return false;
+    }
+
+    // Status bo'yicha filter
     if (filterStatus === 'all') return true;
     
     const status = getStudentPaymentStatus(student);
+    
+    // "Qarzdor" filterida - qarz bor bo'lgan barcha o'quvchilar
+    if (filterStatus === 'debtor') {
+      return status.debt > 0;
+    }
+    
     return status.status === filterStatus;
   });
 
@@ -735,8 +901,296 @@ const Payments = () => {
     return `${months[parseInt(month) - 1]} ${year}`;
   };
 
+  // O'qituvchi oyligi hisoblash
+  const getTeacherSalaryInfo = () => {
+    if (!isTeacher || !userData?.id) return null;
+    
+    // groups allaqachon fetchData da filter qilingan - faqat o'qituvchining guruhlari
+    const teacherGroups = groups;
+    const totalStudents = students.length;
+    
+    // Guruhlar bo'yicha REJALI daromad (barcha o'quvchilar to'lasa)
+    let plannedIncome = 0;
+    teacherGroups.forEach(group => {
+      const groupStudents = students.filter(s => s.groupId === group.id);
+      const monthlyFee = parseInt(group.monthlyFee) || parseInt(group.price) || 0;
+      plannedIncome += groupStudents.length * monthlyFee;
+    });
+    
+    // HAQIQIY yig'ilgan pul (bu oy to'langan)
+    const currentMonth = selectedMonth || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+    let collectedIncome = 0;
+    
+    // monthlyBills dan bu oy to'langan summani hisoblash
+    monthlyBills.forEach(bill => {
+      // Faqat o'qituvchining o'quvchilari
+      const isTeacherStudent = students.some(s => s.id === bill.studentId);
+      if (isTeacherStudent && bill.month === currentMonth) {
+        collectedIncome += bill.paidAmount || 0;
+      }
+    });
+    
+    // Agar monthlyBills bo'sh bo'lsa, payments dan hisoblash
+    if (collectedIncome === 0) {
+      payments.forEach(payment => {
+        const isTeacherStudent = students.some(s => s.id === payment.studentId);
+        if (isTeacherStudent) {
+          let paymentMonth;
+          if (payment.paidAt) {
+            const date = typeof payment.paidAt === 'string' 
+              ? new Date(payment.paidAt) 
+              : payment.paidAt?.toDate?.() || new Date(payment.paidAt?.seconds * 1000);
+            if (date && !isNaN(date)) {
+              paymentMonth = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+            }
+          }
+          if (paymentMonth === currentMonth) {
+            collectedIncome += parseInt(payment.amount) || 0;
+          }
+        }
+      });
+    }
+    
+    // O'qituvchi ulushi foizi
+    const teacherPercent = parseInt(settings.teacherPercent) || 40;
+    
+    // Ikki xil oylik hisoblash
+    const plannedSalary = Math.round(plannedIncome * teacherPercent / 100);
+    const collectedSalary = Math.round(collectedIncome * teacherPercent / 100);
+    
+    return {
+      groups: teacherGroups.length,
+      students: totalStudents,
+      plannedIncome,      // Rejali daromad
+      collectedIncome,    // Yig'ilgan pul
+      percent: teacherPercent,
+      plannedSalary,      // Rejali oylik
+      collectedSalary     // Haqiqiy oylik (yig'ilgan puldan)
+    };
+  };
+
+  const teacherSalary = getTeacherSalaryInfo();
+
   if (loading) return <Loading fullScreen text="Yuklanmoqda..." />;
 
+  // ========== O'QUVCHI / OTA-ONA KO'RINISHI ==========
+  if (isStudentOrParent) {
+    const student = students[0]; // fetchData da topilgan student
+    const studentId = student?.id; // To'g'ri studentId - students jadvalidan
+    const studentBills = getStudentBills(studentId);
+    const totalDebt = getStudentTotalDebt(studentId);
+    
+    console.log('Rendering student view - student:', student?.fullName, 'id:', studentId, 'bills:', studentBills.length, 'debt:', totalDebt);
+    
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Mening to'lovlarim</h1>
+          <p className="text-gray-500">{student?.fullName}</p>
+        </div>
+
+        {/* Qarz holati */}
+        <Card padding="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <p className="text-gray-500">Joriy qarz</p>
+              <p className={`text-3xl font-bold ${totalDebt > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                {formatMoney(totalDebt)}
+              </p>
+            </div>
+            {totalDebt > 0 ? (
+              <AlertTriangle className="w-12 h-12 text-red-500" />
+            ) : (
+              <CheckCircle className="w-12 h-12 text-green-500" />
+            )}
+          </div>
+          {totalDebt > 0 && (
+            <p className="text-sm text-gray-500">
+              Iltimos, to'lovni amalga oshiring yoki admin bilan bog'laning.
+            </p>
+          )}
+        </Card>
+
+        {/* Oylik to'lovlar */}
+        <div>
+          <h2 className="text-lg font-semibold mb-4">To'lov tarixi</h2>
+          <div className="space-y-3">
+            {studentBills.length === 0 ? (
+              <Card className="text-center py-8">
+                <p className="text-gray-500">To'lovlar mavjud emas</p>
+              </Card>
+            ) : (
+              studentBills.map((bill, index) => (
+                <Card key={index} padding="p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-medium">{getMonthName(bill.month)}</span>
+                    <Badge variant={
+                      bill.status === 'paid' ? 'success' : 
+                      bill.status === 'partial' ? 'warning' : 'danger'
+                    }>
+                      {bill.status === 'paid' ? "To'langan" : 
+                       bill.status === 'partial' ? 'Qisman' : 'Kutilmoqda'}
+                    </Badge>
+                  </div>
+                  <div className="flex justify-between text-sm text-gray-500 mb-2">
+                    <span>To'langan: {formatMoney(bill.paidAmount)}</span>
+                    <span>Jami: {formatMoney(bill.totalAmount)}</span>
+                  </div>
+                  {/* Progress bar */}
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div 
+                      className={`h-2 rounded-full ${
+                        bill.status === 'paid' ? 'bg-green-500' : 
+                        bill.status === 'partial' ? 'bg-yellow-500' : 'bg-gray-400'
+                      }`}
+                      style={{ width: `${Math.min((bill.paidAmount / bill.totalAmount) * 100, 100)}%` }}
+                    />
+                  </div>
+                  {bill.remainingAmount > 0 && (
+                    <p className="text-sm text-red-600 mt-2">
+                      Qoldi: {formatMoney(bill.remainingAmount)}
+                    </p>
+                  )}
+                </Card>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ========== O'QITUVCHI KO'RINISHI ==========
+  if (isTeacher) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">To'lovlar</h1>
+          <p className="text-gray-500">Mening guruhlarim bo'yicha</p>
+        </div>
+
+        {/* O'qituvchi oyligi */}
+        {teacherSalary && (
+          <Card padding="p-6" className="bg-gradient-to-br from-blue-50 to-indigo-100">
+            <h2 className="text-lg font-semibold text-blue-800 mb-4 flex items-center gap-2">
+              <Wallet className="w-5 h-5" />
+              Mening oyligim
+            </h2>
+            
+            {/* Asosiy ma'lumotlar */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+              <div>
+                <p className="text-sm text-blue-600">Guruhlar</p>
+                <p className="text-2xl font-bold text-blue-800">{teacherSalary.groups}</p>
+              </div>
+              <div>
+                <p className="text-sm text-blue-600">O'quvchilar</p>
+                <p className="text-2xl font-bold text-blue-800">{teacherSalary.students}</p>
+              </div>
+              <div>
+                <p className="text-sm text-blue-600">Rejali daromad</p>
+                <p className="text-2xl font-bold text-blue-800">{formatMoney(teacherSalary.plannedIncome)}</p>
+              </div>
+              <div>
+                <p className="text-sm text-green-600">Yig'ilgan pul</p>
+                <p className="text-2xl font-bold text-green-700">{formatMoney(teacherSalary.collectedIncome)}</p>
+              </div>
+            </div>
+            
+            {/* Oylik hisob-kitob */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-blue-200">
+              <div className="p-4 bg-white/50 rounded-lg">
+                <p className="text-sm text-gray-600 mb-1">Rejali oylik ({teacherSalary.percent}%)</p>
+                <p className="text-xl font-bold text-gray-700">{formatMoney(teacherSalary.plannedSalary)}</p>
+                <p className="text-xs text-gray-500 mt-1">Barcha o'quvchilar to'lasa</p>
+              </div>
+              <div className="p-4 bg-green-100 rounded-lg border-2 border-green-300">
+                <p className="text-sm text-green-700 mb-1">Haqiqiy oylik ({teacherSalary.percent}%)</p>
+                <p className="text-2xl font-bold text-green-700">{formatMoney(teacherSalary.collectedSalary)}</p>
+                <p className="text-xs text-green-600 mt-1">Yig'ilgan puldan</p>
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {/* Statistika */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card padding="p-4" className="bg-red-50">
+            <p className="text-2xl font-bold text-red-700">{formatMoney(stats.totalDebt)}</p>
+            <p className="text-sm text-red-600">Umumiy qarz</p>
+          </Card>
+          <Card padding="p-4" className="bg-green-50">
+            <p className="text-2xl font-bold text-green-700">{formatMoney(stats.totalPaid)}</p>
+            <p className="text-sm text-green-600">Bu oy to'langan</p>
+          </Card>
+          <Card padding="p-4" className="text-center">
+            <p className="text-2xl font-bold text-green-600">{stats.fullyPaid}</p>
+            <p className="text-sm text-gray-500">To'langan</p>
+          </Card>
+          <Card padding="p-4" className="text-center">
+            <p className="text-2xl font-bold text-yellow-600">{stats.partialPaid}</p>
+            <p className="text-sm text-gray-500">Qisman</p>
+          </Card>
+        </div>
+
+        {/* O'quvchilar ro'yxati */}
+        <div className="flex items-center gap-4 mb-4">
+          <div className="flex-1 relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+            <input
+              type="text"
+              placeholder="O'quvchi qidirish..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          {filteredStudents.length === 0 ? (
+            <Card className="text-center py-8">
+              <Users className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500">O'quvchilar topilmadi</p>
+            </Card>
+          ) : (
+            filteredStudents.map(student => {
+              const status = getStudentPaymentStatus(student);
+              return (
+                <Card key={student.id} padding="p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <Avatar name={student.fullName} />
+                      <div>
+                        <h3 className="font-medium">{student.fullName}</h3>
+                        <p className="text-sm text-gray-500">
+                          {groups.find(g => g.id === student.groupId)?.name}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      {status.debt > 0 && (
+                        <p className="text-red-600 font-semibold">{formatMoney(status.debt)} qarz</p>
+                      )}
+                      <Badge variant={
+                        status.status === 'paid' ? 'success' : 
+                        status.status === 'partial' ? 'warning' : 'danger'
+                      }>
+                        {status.status === 'paid' ? "To'langan" : 
+                         status.status === 'partial' ? 'Qisman' : 'Kutilmoqda'}
+                      </Badge>
+                    </div>
+                  </div>
+                </Card>
+              );
+            })
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ========== ADMIN / DIREKTOR KO'RINISHI ==========
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header */}
@@ -746,21 +1200,19 @@ const Payments = () => {
           <p className="text-gray-500">Qisman to'lov tizimi</p>
         </div>
         
-        {isAdmin && (
-          <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={() => setShowCreateBillModal(true)}>
-              <Receipt className="w-4 h-4 mr-2" />
-              Hisob yaratish
-            </Button>
-            <Button onClick={() => {
-              setSelectedStudent(null);
-              setShowPaymentModal(true);
-            }}>
-              <Plus className="w-4 h-4 mr-2" />
-              To'lov qabul qilish
-            </Button>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setShowCreateBillModal(true)}>
+            <Receipt className="w-4 h-4 mr-2" />
+            Hisob yaratish
+          </Button>
+          <Button onClick={() => {
+            setSelectedStudent(null);
+            setShowPaymentModal(true);
+          }}>
+            <Plus className="w-4 h-4 mr-2" />
+            To'lov qabul qilish
+          </Button>
+        </div>
       </div>
 
       {/* Statistika */}
@@ -819,6 +1271,19 @@ const Payments = () => {
           </div>
           
           <div className="flex items-center gap-2">
+            {/* Guruh filteri */}
+            <select
+              value={filterGroup}
+              onChange={(e) => setFilterGroup(e.target.value)}
+              className="px-3 py-2 border rounded-lg text-sm"
+            >
+              <option value="all">Barcha guruhlar</option>
+              {groups.map(g => (
+                <option key={g.id} value={g.id}>{g.name}</option>
+              ))}
+            </select>
+            
+            {/* Status filteri */}
             <select
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value)}
