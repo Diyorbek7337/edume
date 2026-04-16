@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Save, Building, Phone, Mail, Globe, Clock, Percent, Users, Wallet } from 'lucide-react';
+import { Save, Building, Phone, Mail, Globe, Clock, Percent, Users, Wallet, BookOpen, Plus, X, CheckCircle, AlertCircle, RefreshCw, Send, Copy, Check, ExternalLink } from 'lucide-react';
 import { Card, Button, Input, Loading, Select } from '../components/common';
-import { settingsAPI } from '../services/api';
+import { settingsAPI, studentsAPI } from '../services/api';
 import { toast } from 'react-toastify';
+import { getBotInfo, getUpdates, parseRegistrations } from '../services/telegram';
 
 const Settings = () => {
   const [settings, setSettings] = useState({
@@ -25,17 +26,28 @@ const Settings = () => {
     teacherPerStudent: '50000',
     teacherPerHour: '100000',
     teacherPercentage: '30',
+    // Fanlar
+    subjects: [],
     // SMS va bildirishnomalar
     smsEnabled: false,
     smsProvider: '',
     smsApiKey: '',
     telegramBotToken: '',
+    telegramBotUsername: '',
     telegramEnabled: false,
     // To'lov eslatmasi
     paymentReminderDays: '3',
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [newSubject, setNewSubject] = useState('');
+
+  // Telegram
+  const [botVerifying, setBotVerifying] = useState(false);
+  const [botInfo, setBotInfo] = useState(null);   // { id, username, first_name }
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null); // { linked, total }
+  const [copiedToken, setCopiedToken] = useState(false);
 
   useEffect(() => { fetchSettings(); }, []);
 
@@ -60,6 +72,73 @@ const Settings = () => {
       toast.error("Xatolik yuz berdi: " + err.message); 
     }
     finally { setSaving(false); }
+  };
+
+  // ---- Telegram helpers ----
+
+  const handleVerifyToken = async () => {
+    if (!settings.telegramBotToken.trim()) {
+      toast.error("Bot token kiriting");
+      return;
+    }
+    setBotVerifying(true);
+    setBotInfo(null);
+    try {
+      const info = await getBotInfo(settings.telegramBotToken.trim());
+      setBotInfo(info);
+      // Auto-fill username from bot info
+      setSettings(s => ({ ...s, telegramBotUsername: info.username }));
+      toast.success(`Bot topildi: @${info.username}`);
+    } catch (err) {
+      toast.error("Token noto'g'ri: " + err.message);
+    } finally {
+      setBotVerifying(false);
+    }
+  };
+
+  const handleSyncChatIds = async () => {
+    if (!settings.telegramBotToken) {
+      toast.error("Avval bot tokenini saqlang");
+      return;
+    }
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const updates = await getUpdates(settings.telegramBotToken.trim());
+      const registrations = parseRegistrations(updates);
+
+      if (registrations.length === 0) {
+        toast.info("Yangi ro'yxatdan o'tgan foydalanuvchi topilmadi");
+        setSyncing(false);
+        return;
+      }
+
+      // Match by parentPhone → save parentTelegramChatId on student record
+      const allStudents = await studentsAPI.getAll();
+      let linked = 0;
+
+      for (const reg of registrations) {
+        const match = allStudents.find(s => {
+          const p = (s.parentPhone || '').replace(/\D/g, '');
+          return p === reg.phone || p.endsWith(reg.phone) || reg.phone.endsWith(p);
+        });
+        if (match && !match.parentTelegramChatId) {
+          await studentsAPI.update(match.id, { parentTelegramChatId: String(reg.chatId) });
+          linked++;
+        }
+      }
+
+      setSyncResult({ linked, total: registrations.length });
+      if (linked > 0) {
+        toast.success(`${linked} ta ota-ona Telegram bilan ulandi!`);
+      } else {
+        toast.info(`${registrations.length} ta yangi ro'yxat topildi, lekin mos o'quvchi topilmadi`);
+      }
+    } catch (err) {
+      toast.error("Sinxronlashda xatolik: " + err.message);
+    } finally {
+      setSyncing(false);
+    }
   };
 
   if (loading) return <Loading fullScreen text="Yuklanmoqda..." />;
@@ -113,6 +192,63 @@ const Settings = () => {
               placeholder="Toshkent sh., Chilonzor t."
               className="md:col-span-2"
             />
+          </div>
+        </Card>
+
+        {/* Fanlar */}
+        <Card>
+          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <BookOpen className="w-5 h-5 text-indigo-600" /> O'tiladigan fanlar
+          </h3>
+          <p className="text-sm text-gray-500 mb-4">Lidlar bo'limida ko'rsatiladigan fanlar ro'yxati</p>
+          <div className="flex gap-2 mb-4">
+            <input
+              type="text"
+              value={newSubject}
+              onChange={(e) => setNewSubject(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const trimmed = newSubject.trim();
+                  if (trimmed && !(settings.subjects || []).includes(trimmed)) {
+                    setSettings({ ...settings, subjects: [...(settings.subjects || []), trimmed] });
+                    setNewSubject('');
+                  }
+                }
+              }}
+              placeholder="Fan nomini kiriting (Enter)"
+              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const trimmed = newSubject.trim();
+                if (trimmed && !(settings.subjects || []).includes(trimmed)) {
+                  setSettings({ ...settings, subjects: [...(settings.subjects || []), trimmed] });
+                  setNewSubject('');
+                }
+              }}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium flex items-center gap-1"
+            >
+              <Plus className="w-4 h-4" /> Qo'shish
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {(settings.subjects || []).length === 0 && (
+              <p className="text-sm text-gray-400">Hali fan qo'shilmagan</p>
+            )}
+            {(settings.subjects || []).map((subj, i) => (
+              <span key={i} className="flex items-center gap-1 px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full text-sm">
+                {subj}
+                <button
+                  type="button"
+                  onClick={() => setSettings({ ...settings, subjects: settings.subjects.filter((_, idx) => idx !== i) })}
+                  className="ml-1 hover:text-red-600"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
           </div>
         </Card>
 
@@ -321,8 +457,9 @@ const Settings = () => {
             </div>
 
             {/* Telegram */}
-            <div className="p-4 border rounded-lg">
-              <label className="flex items-center gap-3 mb-4">
+            <div className="p-4 border rounded-lg space-y-4">
+              {/* Toggle */}
+              <label className="flex items-center gap-3 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={settings.telegramEnabled}
@@ -331,14 +468,102 @@ const Settings = () => {
                 />
                 <span className="font-medium">Telegram botni yoqish</span>
               </label>
+
               {settings.telegramEnabled && (
-                <Input
-                  label="Bot Token"
-                  type="password"
-                  value={settings.telegramBotToken}
-                  onChange={(e) => setSettings({ ...settings, telegramBotToken: e.target.value })}
-                  placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
-                />
+                <>
+                  {/* Setup instruction */}
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800 space-y-1">
+                    <p className="font-medium">Sozlash tartibi:</p>
+                    <ol className="list-decimal ml-4 space-y-0.5 text-blue-700">
+                      <li>Telegramda <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer" className="underline font-medium">@BotFather</a> ga yozing → <code>/newbot</code> → token oling</li>
+                      <li>Tokenni quyida kiriting va "Tekshirish" tugmasini bosing</li>
+                      <li>Saqlang — endi O'quvchilar sahifasidan har bir ota-onaga havola yuboring</li>
+                      <li>Ota-ona havolani bosib, botga xabar yuboradi</li>
+                      <li>"Sinxronlash" tugmasini bosib, chat ID-larni yangilang</li>
+                    </ol>
+                  </div>
+
+                  {/* Token input + verify */}
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-gray-700">Bot Token</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="password"
+                        value={settings.telegramBotToken}
+                        onChange={(e) => {
+                          setSettings({ ...settings, telegramBotToken: e.target.value });
+                          setBotInfo(null);
+                        }}
+                        placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        loading={botVerifying}
+                        onClick={handleVerifyToken}
+                      >
+                        Tekshirish
+                      </Button>
+                    </div>
+
+                    {/* Bot status badge */}
+                    {botInfo && (
+                      <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                        <CheckCircle className="w-4 h-4 flex-shrink-0" />
+                        <span>Bot ulandi: <strong>@{botInfo.username}</strong> ({botInfo.first_name})</span>
+                        <a
+                          href={`https://t.me/${botInfo.username}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ml-auto text-green-600 hover:text-green-800"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Bot username (auto-filled after verify, editable) */}
+                  <Input
+                    label="Bot username (@siz)"
+                    value={settings.telegramBotUsername}
+                    onChange={(e) => setSettings({ ...settings, telegramBotUsername: e.target.value.replace('@', '') })}
+                    placeholder="my_edu_bot"
+                    helpText="Tekshirish tugmasidan so'ng avtomatik to'ldiriladi"
+                  />
+
+                  {/* Sync button */}
+                  <div className="flex items-center gap-3 pt-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      icon={RefreshCw}
+                      loading={syncing}
+                      onClick={handleSyncChatIds}
+                      disabled={!settings.telegramBotToken}
+                    >
+                      Chat ID-larni sinxronlash
+                    </Button>
+
+                    {syncResult && (
+                      <span className="text-sm text-gray-600">
+                        {syncResult.linked > 0
+                          ? <span className="text-green-700 font-medium">✓ {syncResult.linked} ta yangi ota-ona ulandi</span>
+                          : <span className="text-gray-500">Yangi ulanish topilmadi</span>
+                        }
+                      </span>
+                    )}
+                  </div>
+
+                  {/* How sync works */}
+                  <p className="text-xs text-gray-400">
+                    Sinxronlash: ota-onalar botga <code className="bg-gray-100 px-1 rounded">/start telefon</code> xabarini yuborganda,
+                    bu tugma orqali ularning chat ID-lari tizimga saqlanadi.
+                    O'quvchilar sahifasida har bir ota-onaga havola yaratishingiz mumkin.
+                  </p>
+                </>
               )}
             </div>
           </div>

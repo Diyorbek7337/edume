@@ -27,16 +27,15 @@ const Leaderboard = () => {
   const isStudentOrParent = role === ROLES.STUDENT || role === ROLES.PARENT;
 
   const POINT_RULES = {
-    grade_excellent: { points: 50, label: 'A\'lo baho (90%+)', icon: Star },
-    grade_good: { points: 30, label: 'Yaxshi baho (70-89%)', icon: Star },
-    grade_average: { points: 10, label: 'O\'rta baho (50-69%)', icon: Star },
-    attendance_present: { points: 10, label: 'Darsga keldi', icon: CheckCircle },
-    attendance_streak_7: { points: 100, label: '7 kun ketma-ket', icon: Flame },
-    attendance_streak_30: { points: 500, label: '30 kun ketma-ket', icon: Flame },
-    homework_ontime: { points: 30, label: 'Vazifa o\'z vaqtida', icon: BookOpen },
-    homework_excellent: { points: 50, label: 'A\'lo vazifa (90%+)', icon: BookOpen },
-    quiz_passed: { points: 40, label: 'Test o\'tdi', icon: Target },
-    quiz_excellent: { points: 100, label: 'A\'lo test (90%+)', icon: Trophy },
+    qa_correct:         { points: 10,  label: 'To\'g\'ri javob (savol-javob)',  icon: Star },
+    practical_per_pt:   { points: 5,   label: 'Amaliy ish (har 1 ball uchun)', icon: Star },
+    attendance_present: { points: 10,  label: 'Darsga keldi',                  icon: CheckCircle },
+    attendance_streak_7:  { points: 100, label: '7 kun ketma-ket',             icon: Flame },
+    attendance_streak_30: { points: 500, label: '30 kun ketma-ket',            icon: Flame },
+    homework_ontime:    { points: 30,  label: 'Vazifa o\'z vaqtida',           icon: BookOpen },
+    homework_excellent: { points: 50,  label: 'A\'lo vazifa (90%+)',           icon: BookOpen },
+    quiz_passed:        { points: 40,  label: 'Test o\'tdi',                   icon: Target },
+    quiz_excellent:     { points: 100, label: 'A\'lo test (90%+)',             icon: Trophy },
   };
 
   const ACHIEVEMENTS = [
@@ -140,13 +139,22 @@ const Leaderboard = () => {
       const leaderboard = await Promise.all(studentsData.map(async (student) => {
         let totalPoints = 0;
 
-        // Baholar
+        // Baholar — yangi tizim: savol-javob va amaliy ish
         const myGrades = grades.filter(g => g.studentId === student.id && filterByPeriod(g.date || g.createdAt));
         myGrades.forEach(g => {
-          const percent = (g.grade / g.maxGrade) * 100;
-          if (percent >= 90) totalPoints += POINT_RULES.grade_excellent.points;
-          else if (percent >= 70) totalPoints += POINT_RULES.grade_good.points;
-          else if (percent >= 50) totalPoints += POINT_RULES.grade_average.points;
+          if (g.type === 'qa' || g.maxGrade === 1) {
+            // Savol-javob: 0–1 oraliq (0.3, 0.5, 1 va h.k.) → proportional ball
+            totalPoints += (g.grade || 0) * POINT_RULES.qa_correct.points;
+          } else if (g.type === 'practical' || (g.maxGrade > 1 && g.maxGrade <= 10)) {
+            // Amaliy ish: har 1 ball uchun POINT_RULES.practical_per_pt ball
+            totalPoints += (g.grade || 0) * POINT_RULES.practical_per_pt.points;
+          } else {
+            // Eski 100-ballik baholar uchun backward compat
+            const percent = (g.grade / g.maxGrade) * 100;
+            if (percent >= 90) totalPoints += 50;
+            else if (percent >= 70) totalPoints += 30;
+            else if (percent >= 50) totalPoints += 10;
+          }
         });
 
         // Davomat
@@ -174,35 +182,39 @@ const Leaderboard = () => {
         if (streak >= 30) totalPoints += POINT_RULES.attendance_streak_30.points;
         else if (streak >= 7) totalPoints += POINT_RULES.attendance_streak_7.points;
 
-        // Uy vazifalari
+        // Uy vazifalari — parallel fetch
         let completedHomework = 0;
-        for (const hw of homework) {
-          const subs = await homeworkAPI.getSubmissions(hw.id);
-          const mySub = subs.find(s => s.studentId === student.id);
-          if (mySub) {
-            completedHomework++;
-            if (mySub.score !== undefined) {
-              const percent = (mySub.score / hw.maxScore) * 100;
-              if (percent >= 90) totalPoints += POINT_RULES.homework_excellent.points;
-              else totalPoints += POINT_RULES.homework_ontime.points;
-            } else {
-              totalPoints += POINT_RULES.homework_ontime.points;
+        if (homework.length > 0) {
+          const allSubs = await Promise.all(homework.map(hw => homeworkAPI.getSubmissions(hw.id)));
+          homework.forEach((hw, idx) => {
+            const mySub = allSubs[idx].find(s => s.studentId === student.id);
+            if (mySub) {
+              completedHomework++;
+              if (mySub.score !== undefined) {
+                const percent = (mySub.score / hw.maxScore) * 100;
+                if (percent >= 90) totalPoints += POINT_RULES.homework_excellent.points;
+                else totalPoints += POINT_RULES.homework_ontime.points;
+              } else {
+                totalPoints += POINT_RULES.homework_ontime.points;
+              }
             }
-          }
+          });
         }
 
-        // Testlar
+        // Testlar — parallel fetch
         let quizzesPassed = 0;
         let perfectScores = 0;
-        for (const q of quizzes) {
-          const results = await quizAPI.getResults(q.id);
-          const myResult = results.find(r => r.studentId === student.id);
-          if (myResult?.passed) {
-            quizzesPassed++;
-            if (myResult.percentage >= 90) totalPoints += POINT_RULES.quiz_excellent.points;
-            else totalPoints += POINT_RULES.quiz_passed.points;
-            if (myResult.percentage === 100) perfectScores++;
-          }
+        if (quizzes.length > 0) {
+          const allResults = await Promise.all(quizzes.map(q => quizAPI.getResults(q.id)));
+          quizzes.forEach((q, idx) => {
+            const myResult = allResults[idx].find(r => r.studentId === student.id);
+            if (myResult?.passed) {
+              quizzesPassed++;
+              if (myResult.percentage >= 90) totalPoints += POINT_RULES.quiz_excellent.points;
+              else totalPoints += POINT_RULES.quiz_passed.points;
+              if (myResult.percentage === 100) perfectScores++;
+            }
+          });
         }
 
         const stats = {

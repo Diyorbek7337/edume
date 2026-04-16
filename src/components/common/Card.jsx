@@ -15,9 +15,10 @@ const Card = ({
   return (
     <div
       className={`
-        bg-white rounded-2xl shadow-card border border-gray-100
-        ${hover ? 'card-hover cursor-pointer' : ''}
-        ${paddingClasses[padding]}
+        bg-white dark:bg-gray-800
+        rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700
+        ${hover ? 'hover:shadow-md hover:-translate-y-0.5 transition-all cursor-pointer' : ''}
+        ${paddingClasses[padding] ?? padding}
         ${className}
       `}
       {...props}

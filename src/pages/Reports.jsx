@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react';
-import { 
-  Download, FileText, Users, CreditCard, CalendarCheck, TrendingUp, 
-  BarChart3, PieChart as PieChartIcon, Calendar, Filter
+import {
+  Download, FileText, Users, CreditCard, CalendarCheck, TrendingUp,
+  BarChart3, PieChart as PieChartIcon, Calendar, Filter, AlertTriangle,
+  TrendingDown, Percent, Target, ArrowUpRight, ArrowDownRight
 } from 'lucide-react';
 import { Card, Button, Badge, Loading } from '../components/common';
 import { studentsAPI, teachersAPI, groupsAPI, paymentsAPI, attendanceAPI, gradesAPI } from '../services/api';
 import { formatMoney, formatDate } from '../utils/helpers';
-import { 
+import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, LineChart, Line, AreaChart, Area
+  PieChart, Pie, Cell, LineChart, Line, AreaChart, Area, Legend
 } from 'recharts';
 
 const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4'];
@@ -35,6 +36,16 @@ const Reports = () => {
   const [attendanceTrend, setAttendanceTrend] = useState([]);
   const [paymentMethods, setPaymentMethods] = useState([]);
 
+  // Moliyaviy tahlil uchun qo'shimcha state
+  const [revenueByGroup, setRevenueByGroup] = useState([]);
+  const [debtAging, setDebtAging] = useState([]);
+  const [topDebtors, setTopDebtors] = useState([]);
+  const [collectionRate, setCollectionRate] = useState(0);
+  const [monthComparison, setMonthComparison] = useState({ current: 0, previous: 0, growth: 0 });
+  const [forecastRevenue, setForecastRevenue] = useState(0);
+  const [totalDebtAmount, setTotalDebtAmount] = useState(0);
+  const [allDebtorsCount, setAllDebtorsCount] = useState(0);
+
   useEffect(() => { fetchData(); }, [period]);
 
   const fetchData = async () => {
@@ -52,8 +63,6 @@ const Reports = () => {
       setGroups(groupsData);
       setPayments(paymentsData);
       
-      console.log('Students:', studentsData.length);
-      console.log('Payments:', paymentsData);
       
       // Davomat va baholarni olish
       let allAttendance = [];
@@ -71,8 +80,6 @@ const Reports = () => {
       setAttendance(allAttendance);
       setGrades(allGrades);
       
-      console.log('Attendance:', allAttendance.length);
-      console.log('Grades:', allGrades.length);
       
       // Statistika hisoblash - period filter'siz
       const paidPayments = paymentsData.filter(p => p.status === 'paid');
@@ -163,11 +170,98 @@ const Reports = () => {
         const method = p.method || 'Naqd';
         methods[method] = (methods[method] || 0) + (p.amount || 0);
       });
-      setPaymentMethods(Object.entries(methods).map(([name, value]) => ({ 
-        name, 
-        value: value / 1000000 
+      setPaymentMethods(Object.entries(methods).map(([name, value]) => ({
+        name,
+        value: value / 1000000
       })));
-      
+
+      // ===== MOLIYAVIY TAHLIL =====
+
+      // Monthly bills (joriy oy va o'tgan oy)
+      let allBills = [];
+      try { allBills = await paymentsAPI.getMonthlyBills() || []; } catch { allBills = []; }
+
+      const thisMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const prevMonthStr = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}`;
+
+      // Collection rate: bu oy to'langan / bu oy jami bill
+      const thisMonthBills = allBills.filter(b => b.month === thisMonthStr);
+      const totalBilled = thisMonthBills.reduce((s, b) => s + (b.totalAmount || 0), 0);
+      const totalCollected = thisMonthBills.reduce((s, b) => s + (b.paidAmount || 0), 0);
+      setCollectionRate(totalBilled > 0 ? Math.round((totalCollected / totalBilled) * 100) : 0);
+
+      // Bu oy va o'tgan oy daromad taqqoslash
+      const currentMonthRevenue = paymentsData
+        .filter(p => {
+          if (p.status !== 'paid') return false;
+          const d = p.paidAt?.toDate ? p.paidAt.toDate() : new Date(p.paidAt || p.createdAt);
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` === thisMonthStr;
+        })
+        .reduce((s, p) => s + (p.amount || 0), 0);
+
+      const prevMonthRevenue = paymentsData
+        .filter(p => {
+          if (p.status !== 'paid') return false;
+          const d = p.paidAt?.toDate ? p.paidAt.toDate() : new Date(p.paidAt || p.createdAt);
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` === prevMonthStr;
+        })
+        .reduce((s, p) => s + (p.amount || 0), 0);
+
+      const growth = prevMonthRevenue > 0
+        ? Math.round(((currentMonthRevenue - prevMonthRevenue) / prevMonthRevenue) * 100)
+        : 0;
+      setMonthComparison({ current: currentMonthRevenue, previous: prevMonthRevenue, growth });
+
+      // Guruh bo'yicha daromad (bu oy)
+      const groupRevenue = groupsData.map(g => {
+        const groupBills = thisMonthBills.filter(b => b.groupId === g.id);
+        const billed = groupBills.reduce((s, b) => s + (b.totalAmount || 0), 0);
+        const collected = groupBills.reduce((s, b) => s + (b.paidAmount || 0), 0);
+        const remaining = billed - collected;
+        return { name: g.name, billed, collected, remaining };
+      }).filter(g => g.billed > 0);
+      setRevenueByGroup(groupRevenue);
+
+      // Top qarzdorlar
+      const debtorMap = {};
+      allBills.forEach(b => {
+        if ((b.remainingAmount || 0) > 0 && !b.isFree) {
+          debtorMap[b.studentId] = {
+            name: b.studentName || '—',
+            groupName: b.groupName || '—',
+            debt: (debtorMap[b.studentId]?.debt || 0) + b.remainingAmount,
+          };
+        }
+      });
+      const allDebtorsList = Object.values(debtorMap).sort((a, b) => b.debt - a.debt);
+      setAllDebtorsCount(allDebtorsList.length);
+      setTotalDebtAmount(allDebtorsList.reduce((s, d) => s + d.debt, 0));
+      const sortedDebtors = allDebtorsList.slice(0, 8);
+      setTopDebtors(sortedDebtors);
+
+      // Qarz yoshi (aging): unpaid bills by month count
+      const agingBuckets = { '1 oy': 0, '2 oy': 0, '3+ oy': 0 };
+      allBills.forEach(b => {
+        if ((b.remainingAmount || 0) <= 0 || b.isFree) return;
+        const [yr, mo] = b.month.split('-').map(Number);
+        const billDate = new Date(yr, mo - 1, 1);
+        const diffMonths = (now.getFullYear() - billDate.getFullYear()) * 12 + (now.getMonth() - billDate.getMonth());
+        if (diffMonths <= 1) agingBuckets['1 oy'] += b.remainingAmount;
+        else if (diffMonths === 2) agingBuckets['2 oy'] += b.remainingAmount;
+        else agingBuckets['3+ oy'] += b.remainingAmount;
+      });
+      setDebtAging(Object.entries(agingBuckets).map(([name, value]) => ({ name, value: value / 1000000 })));
+
+      // Daromad prognozi: faol o'quvchilar × guruh narxi
+      let forecast = 0;
+      groupsData.forEach(g => {
+        const fee = parseInt(g.monthlyFee) || parseInt(g.price) || 0;
+        const cnt = studentsData.filter(s => s.groupId === g.id && s.status === 'active' && !s.isFree).length;
+        forecast += fee * cnt;
+      });
+      setForecastRevenue(forecast);
+
     } catch (err) { console.error('Fetch error:', err); }
     finally { setLoading(false); }
   };
@@ -387,80 +481,202 @@ const Reports = () => {
       {/* Finance Tab */}
       {activeTab === 'finance' && (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* KPI kartalar — 5 ta */}
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <Card padding="p-4" className="bg-green-50 border-green-200">
-              <div className="text-center">
-                <p className="text-sm text-green-600">Jami tushum</p>
-                <p className="text-3xl font-bold text-green-700">{formatMoney(stats.revenue)}</p>
-                <p className="text-xs text-green-500 mt-1">
-                  {payments.filter(p => p.status === 'paid').length} ta to'lov
-                </p>
-              </div>
+              <p className="text-xs text-green-600 font-medium">Jami tushum</p>
+              <p className="text-2xl font-bold text-green-700 mt-1">{formatMoney(stats.revenue)}</p>
+              <p className="text-xs text-green-500 mt-1">{payments.filter(p => p.status === 'paid').length} ta to'lov</p>
             </Card>
-            
+
             <Card padding="p-4" className="bg-red-50 border-red-200">
-              <div className="text-center">
-                <p className="text-sm text-red-600">Kutilayotgan to'lovlar</p>
-                <p className="text-3xl font-bold text-red-700">{formatMoney(stats.pendingPayments)}</p>
-                <p className="text-xs text-red-500 mt-1">
-                  {payments.filter(p => p.status === 'pending').length} ta qarzdor
+              <p className="text-xs text-red-600 font-medium">Umumiy qarz</p>
+              <p className="text-2xl font-bold text-red-700 mt-1">{formatMoney(totalDebtAmount)}</p>
+              <p className="text-xs text-red-500 mt-1">{allDebtorsCount} ta qarzdor</p>
+            </Card>
+
+            <Card padding="p-4" className="bg-blue-50 border-blue-200">
+              <p className="text-xs text-blue-600 font-medium">Inkasso stavkasi</p>
+              <p className="text-2xl font-bold text-blue-700 mt-1">{collectionRate}%</p>
+              <p className="text-xs text-blue-500 mt-1">Bu oy yig'ildi</p>
+            </Card>
+
+            <Card padding="p-4" className={monthComparison.growth >= 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-orange-50 border-orange-200'}>
+              <p className={`text-xs font-medium ${monthComparison.growth >= 0 ? 'text-emerald-600' : 'text-orange-600'}`}>Bu oy o'sish</p>
+              <div className="flex items-center gap-1 mt-1">
+                {monthComparison.growth >= 0
+                  ? <ArrowUpRight className="w-5 h-5 text-emerald-600" />
+                  : <ArrowDownRight className="w-5 h-5 text-orange-600" />}
+                <p className={`text-2xl font-bold ${monthComparison.growth >= 0 ? 'text-emerald-700' : 'text-orange-700'}`}>
+                  {monthComparison.growth >= 0 ? '+' : ''}{monthComparison.growth}%
                 </p>
               </div>
+              <p className="text-xs text-gray-500 mt-1">{formatMoney(monthComparison.current)}</p>
             </Card>
-            
-            <Card padding="p-4" className="bg-blue-50 border-blue-200">
-              <div className="text-center">
-                <p className="text-sm text-blue-600">O'rtacha to'lov</p>
-                <p className="text-3xl font-bold text-blue-700">
-                  {payments.filter(p => p.status === 'paid').length > 0 
-                    ? formatMoney(stats.revenue / payments.filter(p => p.status === 'paid').length)
-                    : '0 so\'m'}
-                </p>
+
+            <Card padding="p-4" className="bg-purple-50 border-purple-200">
+              <p className="text-xs text-purple-600 font-medium">Prognoz (joriy oy)</p>
+              <p className="text-2xl font-bold text-purple-700 mt-1">{formatMoney(forecastRevenue)}</p>
+              <p className="text-xs text-purple-500 mt-1">Barcha o'quvchilar to'lasa</p>
+            </Card>
+          </div>
+
+          {/* Oylik taqqoslash + To'lov usullari */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card>
+              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                <TrendingUp className="w-5 h-5 text-primary-600" />
+                Oylik daromad (mln so'm)
+              </h3>
+              <div className="h-64">
+                {monthlyRevenue.some(m => m.revenue > 0) ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={monthlyRevenue}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip formatter={(v) => [`${v.toFixed(1)} mln`, 'Daromad']} />
+                      <Bar dataKey="revenue" fill="#3B82F6" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex items-center justify-center text-gray-400">To'lovlar yo'q</div>
+                )}
+              </div>
+            </Card>
+
+            <Card>
+              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                <CreditCard className="w-5 h-5 text-primary-600" />
+                To'lov usullari
+              </h3>
+              <div className="h-64">
+                {paymentMethods.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={paymentMethods} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis type="number" />
+                      <YAxis dataKey="name" type="category" width={80} />
+                      <Tooltip formatter={(v) => [`${v.toFixed(1)} mln`, 'Summa']} />
+                      <Bar dataKey="value" fill="#8B5CF6" radius={[0, 4, 4, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex items-center justify-center text-gray-400">To'lovlar yo'q</div>
+                )}
               </div>
             </Card>
           </div>
 
+          {/* Guruh bo'yicha daromad */}
+          {revenueByGroup.length > 0 && (
+            <Card>
+              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                <BarChart3 className="w-5 h-5 text-primary-600" />
+                Guruh bo'yicha (joriy oy, mln so'm)
+              </h3>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={revenueByGroup.map(g => ({
+                    name: g.name,
+                    "To'langan": +(g.collected / 1000000).toFixed(2),
+                    "Qoldi": +(g.remaining / 1000000).toFixed(2),
+                  }))}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                    <YAxis />
+                    <Tooltip formatter={(v, n) => [`${v} mln`, n]} />
+                    <Legend />
+                    <Bar dataKey="To'langan" stackId="a" fill="#10B981" />
+                    <Bar dataKey="Qoldi" stackId="a" fill="#F87171" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+          )}
+
+          {/* Qarz yoshi + Top qarzdorlar */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card>
+              <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-orange-500" />
+                Qarz yoshi (mln so'm)
+              </h3>
+              <p className="text-xs text-gray-500 mb-4">Muddati o'tgan to'lovlar qancha vaqtdan beri kutmoqda</p>
+              <div className="h-48">
+                {debtAging.some(d => d.value > 0) ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={debtAging}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip formatter={(v) => [`${v.toFixed(2)} mln`, 'Qarz']} />
+                      <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                        {debtAging.map((_, i) => (
+                          <Cell key={i} fill={['#FCD34D', '#F97316', '#EF4444'][i]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex items-center justify-center">
+                    <div className="text-center">
+                      <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-2">
+                        <TrendingUp className="w-6 h-6 text-green-600" />
+                      </div>
+                      <p className="text-green-600 font-medium">Qarzdorlik yo'q!</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </Card>
+
+            <Card>
+              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-red-500" />
+                Top qarzdorlar
+              </h3>
+              {topDebtors.length > 0 ? (
+                <div className="space-y-2">
+                  {topDebtors.map((d, i) => (
+                    <div key={i} className="flex items-center gap-3">
+                      <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-white ${
+                        i === 0 ? 'bg-red-500' : i === 1 ? 'bg-orange-400' : i === 2 ? 'bg-yellow-400' : 'bg-gray-300'
+                      }`}>{i + 1}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm truncate">{d.name}</p>
+                        <p className="text-xs text-gray-500 truncate">{d.groupName}</p>
+                      </div>
+                      <span className="text-sm font-bold text-red-600 flex-shrink-0">{formatMoney(d.debt)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-center text-gray-400 py-8">Qarzdorlar yo'q</p>
+              )}
+            </Card>
+          </div>
+
+          {/* Inkasso progress */}
           <Card>
-            <h3 className="text-lg font-semibold mb-4">Barcha to'lovlar</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-4 py-3 text-left">O'quvchi</th>
-                    <th className="px-4 py-3 text-left">Guruh</th>
-                    <th className="px-4 py-3 text-right">Summa</th>
-                    <th className="px-4 py-3 text-center">Usul</th>
-                    <th className="px-4 py-3 text-center">Holat</th>
-                    <th className="px-4 py-3 text-right">Sana</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {payments.length > 0 ? payments.map(payment => (
-                    <tr key={payment.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 font-medium">{payment.studentName}</td>
-                      <td className="px-4 py-3 text-gray-500">{payment.groupName}</td>
-                      <td className="px-4 py-3 text-right font-semibold">{formatMoney(payment.amount)}</td>
-                      <td className="px-4 py-3 text-center">
-                        <Badge variant="default">{payment.method || 'Naqd'}</Badge>
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <Badge variant={payment.status === 'paid' ? 'success' : 'warning'}>
-                          {payment.status === 'paid' ? 'To\'langan' : 'Kutilmoqda'}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-500">
-                        {formatDate(payment.paidAt || payment.createdAt)}
-                      </td>
-                    </tr>
-                  )) : (
-                    <tr>
-                      <td colSpan="6" className="px-4 py-8 text-center text-gray-500">
-                        To'lovlar yo'q
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <Target className="w-5 h-5 text-primary-600" />
+                Joriy oy inkasso
+              </h3>
+              <span className={`text-2xl font-bold ${collectionRate >= 80 ? 'text-green-600' : collectionRate >= 50 ? 'text-yellow-600' : 'text-red-600'}`}>
+                {collectionRate}%
+              </span>
+            </div>
+            <div className="w-full bg-gray-100 rounded-full h-4 overflow-hidden">
+              <div
+                className={`h-4 rounded-full transition-all ${collectionRate >= 80 ? 'bg-green-500' : collectionRate >= 50 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                style={{ width: `${collectionRate}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-xs text-gray-500 mt-2">
+              <span>To'langan: {formatMoney(monthComparison.current)}</span>
+              <span>Prognoz: {formatMoney(forecastRevenue)}</span>
             </div>
           </Card>
         </>

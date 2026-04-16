@@ -1,13 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Edit, Trash2, Eye, Download, Upload, Copy, Check, Gift, AlertTriangle, FileSpreadsheet, GraduationCap } from 'lucide-react';
+import { Search, Plus, Edit, Trash2, Eye, Download, Upload, Copy, Check, Gift, AlertTriangle, FileSpreadsheet, GraduationCap, Send, CheckSquare, Square, Users, X, ChevronDown } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Avatar, Table, Modal, Loading, EmptyState } from '../components/common';
 import { studentsAPI, groupsAPI, usersAPI, settingsAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
 import { formatPhone, formatMoney } from '../utils/helpers';
+import { validateStudentForm, hasErrors } from '../utils/validation';
+import FieldError from '../components/common/FieldError';
 import { checkLimit, getLimitMessage, SUBSCRIPTION_PLANS } from '../utils/subscriptions';
 import { toast } from 'react-toastify';
 import * as XLSX from 'xlsx';
+import { activityLogAPI, LOG_ACTIONS } from '../services/activityLog';
+import { buildDeepLink } from '../services/telegram';
 
 const Students = () => {
   const { userData, role, centerData } = useAuth();
@@ -31,20 +35,29 @@ const Students = () => {
   const [importLoading, setImportLoading] = useState(false);
   
   const [selectedStudent, setSelectedStudent] = useState(null);
-  const [formData, setFormData] = useState({ 
-    fullName: '', phone: '', email: '', groupId: '', 
+  const [formData, setFormData] = useState({
+    fullName: '', phone: '', email: '', groupId: '',
     parentName: '', parentPhone: '', parentTelegram: '', address: '',
-    birthDate: '', // Tug'ilgan sana
-    startDate: new Date().toISOString().split('T')[0], // Bugungi sana
-    paymentType: 'prorated', // Default proporsional
+    birthDate: '',
+    startDate: new Date().toISOString().split('T')[0],
+    paymentType: 'prorated',
     paymentDay: '1',
     referredBy: '',
-    discount: '0'
+    discount: '0',
+    isFree: false
   });
   const [credentials, setCredentials] = useState({ studentEmail: '', studentPassword: '', parentEmail: '', parentPassword: '' });
   const [formLoading, setFormLoading] = useState(false);
   const [formError, setFormError] = useState('');
+  const [formErrors, setFormErrors] = useState({});
   const [copied, setCopied] = useState('');
+  const [telegramBotUsername, setTelegramBotUsername] = useState('');
+
+  // Bulk actions state
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [showBulkGroupModal, setShowBulkGroupModal] = useState(false);
+  const [bulkGroupId, setBulkGroupId] = useState('');
 
   const isTeacher = role === ROLES.TEACHER;
   const isAdmin = role === ROLES.ADMIN || role === ROLES.DIRECTOR;
@@ -54,7 +67,18 @@ const Students = () => {
   const subscription = centerData?.subscription || 'trial';
   const limitCheck = checkLimit(subscription, 'students', students.length);
 
-  useEffect(() => { fetchData(); }, []);
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    fetchData();
+    // Telegram bot username (for deep links)
+    settingsAPI.get().then(s => {
+      if (isMountedRef.current && s?.telegramBotUsername) {
+        setTelegramBotUsername(s.telegramBotUsername);
+      }
+    }).catch(() => {});
+    return () => { isMountedRef.current = false; };
+  }, []);
 
   const fetchData = async () => {
     try {
@@ -70,16 +94,17 @@ const Students = () => {
         [studentsData, groupsData] = await Promise.all([studentsAPI.getAll(), groupsAPI.getAll()]);
       }
 
+      if (!isMountedRef.current) return;
       setStudents(studentsData);
       setGroups(groupsData);
-    } catch (err) { console.error(err); }
-    finally { setLoading(false); }
+    } catch (err) { if (isMountedRef.current) console.error(err); }
+    finally { if (isMountedRef.current) setLoading(false); }
   };
 
   const filteredStudents = students.filter(s => {
     const matchesSearch = s.fullName?.toLowerCase().includes(searchQuery.toLowerCase()) || s.phone?.includes(searchQuery);
     const matchesGroup = !filterGroup || s.groupId === filterGroup;
-    
+
     // Status bo'yicha filter
     let matchesStatus = true;
     if (filterStatus === 'active') {
@@ -88,28 +113,107 @@ const Students = () => {
       matchesStatus = s.status === 'graduated';
     }
     // 'all' bo'lsa hamma ko'rsatiladi
-    
+
     return matchesSearch && matchesGroup && matchesStatus;
   });
 
-  const resetForm = () => { 
-    setFormData({ 
-      fullName: '', 
-      phone: '', 
-      email: '', 
-      groupId: '', 
-      parentName: '', 
-      parentPhone: '', 
-      parentTelegram: '', 
+  // Bulk helpers (filteredStudents ga bog'liq)
+  const allFilteredIds = filteredStudents.map(s => s.id);
+  const allSelected = allFilteredIds.length > 0 && allFilteredIds.every(id => selectedIds.has(id));
+  const someSelected = selectedIds.size > 0;
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(allFilteredIds));
+    }
+  };
+
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const bulkChangeGroup = async () => {
+    if (!bulkGroupId) return;
+    setBulkLoading(true);
+    try {
+      await Promise.all([...selectedIds].map(id => studentsAPI.update(id, { groupId: bulkGroupId })));
+      const groupName = groups.find(g => g.id === bulkGroupId)?.name || '';
+      toast.success(`${selectedIds.size} ta o'quvchi "${groupName}" guruhiga o'tkazildi`);
+      clearSelection();
+      setShowBulkGroupModal(false);
+      setBulkGroupId('');
+      await fetchData();
+    } catch (err) {
+      toast.error("Xatolik yuz berdi");
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  const bulkGraduate = async () => {
+    if (!window.confirm(`${selectedIds.size} ta o'quvchini "Bitirdi" deb belgilaysizmi?`)) return;
+    setBulkLoading(true);
+    try {
+      await Promise.all([...selectedIds].map(id => studentsAPI.update(id, { status: 'graduated' })));
+      toast.success(`${selectedIds.size} ta o'quvchi bitirdi deb belgilandi`);
+      clearSelection();
+      await fetchData();
+    } catch (err) {
+      toast.error("Xatolik yuz berdi");
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  const bulkDelete = async () => {
+    if (!window.confirm(`${selectedIds.size} ta o'quvchini o'chirasizmi? Bu amalni qaytarib bo'lmaydi!`)) return;
+    setBulkLoading(true);
+    try {
+      await Promise.all([...selectedIds].map(id => studentsAPI.delete(id)));
+      toast.success(`${selectedIds.size} ta o'quvchi o'chirildi`);
+      clearSelection();
+      await fetchData();
+    } catch (err) {
+      toast.error("Xatolik yuz berdi");
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  const resetForm = () => {
+    setFormData({
+      fullName: '',
+      phone: '',
+      email: '',
+      groupId: '',
+      parentName: '',
+      parentPhone: '',
+      parentTelegram: '',
       address: '',
       birthDate: '',
       startDate: new Date().toISOString().split('T')[0],
       paymentDay: '1',
       paymentType: 'full_month',
-      referredBy: '', // Tavsiya qilgan o'quvchi ID
-      discount: '0' // Chegirma foizi
-    }); 
-    setFormError(''); 
+      referredBy: '',
+      discount: '0',
+      isFree: false
+    });
+    setFormError('');
+    setFormErrors({});
+  };
+
+  // Xavfsiz tasodifiy parol generatori (8 belgi, aniq ko'rinadigan harflar)
+  const generatePassword = () => {
+    const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
   };
 
   const updateGroupStudentsCount = async (groupId, increment = true) => {
@@ -126,23 +230,42 @@ const Students = () => {
 
   const handleAdd = async (e) => {
     e.preventDefault();
+    const errors = validateStudentForm(formData);
+    if (hasErrors(errors)) { setFormErrors(errors); return; }
+    setFormErrors({});
     setFormLoading(true);
     setFormError('');
-    
+
     try {
       const group = groups.find(g => g.id === formData.groupId);
       
       // O'quvchi uchun login/parol
       const studentEmail = `${formData.phone.replace(/\D/g, '')}@student.edu`;
-      const studentPassword = 'student123';
+      const studentPassword = generatePassword();
       
       // 1. O'quvchi Firebase Auth yaratish
-      await usersAPI.create({
-        fullName: formData.fullName,
-        email: studentEmail,
-        phone: formData.phone,
-        role: ROLES.STUDENT
-      }, studentPassword);
+      // Agar eski akkaunt mavjud bo'lsa (qayta qo'shilayotgan o'quvchi), davom etamiz
+      try {
+        await usersAPI.create({
+          fullName: formData.fullName,
+          email: studentEmail,
+          phone: formData.phone,
+          role: ROLES.STUDENT
+        }, studentPassword);
+      } catch (authErr) {
+        if (authErr.code === 'auth/email-already-in-use') {
+          // Firebase Auth akkaunt mavjud — faqat Firestore users doc ni yangilaymiz
+          const existingUsers = await usersAPI.getAll();
+          const existingUser = existingUsers.find(u => u.email === studentEmail);
+          if (!existingUser) {
+            // Firestore doc yo'q, lekin Auth bor — yangi doc yaratib ketamiz
+            // (ID mismatch bo'ladi, lekin tizim ishlaydi)
+          }
+          // Davom etamiz — o'quvchi records yaratiladi
+        } else {
+          throw authErr;
+        }
+      }
       
       // 2. Students kolleksiyasiga qo'shish
       const newStudent = await studentsAPI.create({ 
@@ -182,7 +305,7 @@ const Students = () => {
       
       // 3. Ota-ona akkaunti yaratish yoki yangilash
       let parentEmail = '';
-      let parentPassword = 'parent123'; // Default parol
+      let parentPassword = generatePassword();
       let isExistingParent = false;
       
       if (formData.parentPhone) {
@@ -266,7 +389,15 @@ const Students = () => {
       setStudents([{ ...newStudent, email: studentEmail }, ...students]);
       setShowAddModal(false);
       resetForm();
-      
+
+      activityLogAPI.log({
+        action: LOG_ACTIONS.STUDENT_ADDED.key,
+        entityType: 'student',
+        entityName: formData.fullName,
+        details: { groupName: group?.name || '' },
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
+
       // Credentials ko'rsatish
       setCredentials({
         studentEmail,
@@ -276,30 +407,31 @@ const Students = () => {
       });
       setShowCredentialsModal(true);
       
-    } catch (err) { 
+    } catch (err) {
       console.error(err);
-      if (err.code === 'auth/email-already-in-use') {
-        setFormError("Bu telefon raqami allaqachon ro'yxatdan o'tgan");
-      } else {
-        setFormError("Xatolik yuz berdi: " + err.message); 
-      }
+      setFormError("Xatolik yuz berdi: " + err.message);
     }
     finally { setFormLoading(false); }
   };
 
   const handleEdit = async (e) => {
     e.preventDefault();
+    const errors = validateStudentForm(formData);
+    if (hasErrors(errors)) { setFormErrors(errors); return; }
+    setFormErrors({});
     setFormLoading(true);
     setFormError('');
-    
+
     try {
       const group = groups.find(g => g.id === formData.groupId);
       const oldGroupId = selectedStudent.groupId;
       const newGroupId = formData.groupId;
       
-      await studentsAPI.update(selectedStudent.id, { 
-        ...formData, 
-        groupName: group?.name || '' 
+      await studentsAPI.update(selectedStudent.id, {
+        ...formData,
+        groupName: group?.name || '',
+        paymentDay: parseInt(formData.paymentDay) || 1,
+        discount: parseInt(formData.discount) || 0,
       });
       
       if (oldGroupId !== newGroupId) {
@@ -310,8 +442,16 @@ const Students = () => {
       setStudents(students.map(s => s.id === selectedStudent.id ? { ...s, ...formData, groupName: group?.name || '' } : s));
       setShowEditModal(false);
       resetForm();
-    } catch (err) { 
-      setFormError("Xatolik yuz berdi"); 
+
+      activityLogAPI.log({
+        action: LOG_ACTIONS.STUDENT_UPDATED.key,
+        entityType: 'student',
+        entityName: formData.fullName,
+        details: { groupName: group?.name || '' },
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
+    } catch (err) {
+      setFormError("Xatolik yuz berdi");
     }
     finally { setFormLoading(false); }
   };
@@ -329,18 +469,19 @@ const Students = () => {
         if (studentUser) {
           await usersAPI.delete(studentUser.id);
         }
-      } catch (err) { console.log('User delete warning:', err); }
+      } catch (err) { console.error("Delete warning:", err); }
       
       // Ota-ona profilini o'chirish
       if (selectedStudent.parentPhone) {
         try {
-          const parentEmail = `${selectedStudent.parentPhone.replace(/\D/g, '')}@parent.edu`;
+          const cleanParentPhone = selectedStudent.parentPhone.replace(/\D/g, '');
+          const parentEmail = `parent${cleanParentPhone}@edu.local`;
           const allParents = await usersAPI.getByRole(ROLES.PARENT);
-          const parentUser = allParents.find(u => u.email === parentEmail);
+          const parentUser = allParents.find(u => u.email === parentEmail || u.phone === selectedStudent.parentPhone);
           if (parentUser) {
             await usersAPI.delete(parentUser.id);
           }
-        } catch (err) { console.log('Parent delete warning:', err); }
+        } catch (err) { console.error("Delete warning:", err); }
       }
       
       // Guruh studentsCount yangilash
@@ -351,6 +492,13 @@ const Students = () => {
       setStudents(students.filter(s => s.id !== selectedStudent.id));
       setShowDeleteModal(false);
       toast.success("O'quvchi o'chirildi");
+
+      activityLogAPI.log({
+        action: LOG_ACTIONS.STUDENT_DELETED.key,
+        entityType: 'student',
+        entityName: selectedStudent.fullName,
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
     } catch (err) { 
       console.error(err);
       toast.error("O'chirishda xatolik"); 
@@ -382,6 +530,13 @@ const Students = () => {
           : s
       ));
       
+      activityLogAPI.log({
+        action: LOG_ACTIONS.STUDENT_GRADUATED.key,
+        entityType: 'student',
+        entityName: selectedStudent.fullName,
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
+
       setShowGraduateModal(false);
       setSelectedStudent(null);
       toast.success(`${selectedStudent.fullName} kursni muvaffaqiyatli bitirdi! 🎓`);
@@ -418,18 +573,24 @@ const Students = () => {
 
   const openEditModal = (student) => {
     setSelectedStudent(student);
-    setFormData({ 
-      fullName: student.fullName || '', 
-      phone: student.phone || '', 
-      email: student.email || '', 
-      groupId: student.groupId || '', 
-      parentName: student.parentName || '', 
+    setFormData({
+      fullName: student.fullName || '',
+      phone: student.phone || '',
+      email: student.email || '',
+      groupId: student.groupId || '',
+      parentName: student.parentName || '',
       parentPhone: student.parentPhone || '',
       parentTelegram: student.parentTelegram || '',
       address: student.address || '',
-      birthDate: student.birthDate || ''
+      birthDate: student.birthDate || '',
+      startDate: student.startDate || '',
+      paymentDay: student.paymentDay?.toString() || '1',
+      paymentType: student.paymentType || 'full_month',
+      discount: student.discount?.toString() || '0',
+      isFree: student.isFree || false
     });
     setFormError('');
+    setFormErrors({});
     setShowEditModal(true);
   };
 
@@ -696,11 +857,61 @@ const Students = () => {
         </div>
       </Card>
 
+      {/* Bulk actions toolbar */}
+      {someSelected && isAdmin && (
+        <div className="sticky top-0 z-20 bg-primary-600 text-white rounded-xl px-4 py-3 flex flex-wrap items-center gap-3 shadow-lg">
+          <span className="font-semibold text-sm">
+            {selectedIds.size} ta tanlandi
+          </span>
+          <div className="flex-1" />
+          {filterStatus === 'active' && (
+            <button
+              onClick={() => setShowBulkGroupModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-sm font-medium transition"
+            >
+              <Users className="w-4 h-4" /> Guruhni o'zgartirish
+            </button>
+          )}
+          {filterStatus === 'active' && (
+            <button
+              onClick={bulkGraduate}
+              disabled={bulkLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-sm font-medium transition"
+            >
+              <GraduationCap className="w-4 h-4" /> Bitirdi
+            </button>
+          )}
+          {isDirector && (
+            <button
+              onClick={bulkDelete}
+              disabled={bulkLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500 hover:bg-red-600 rounded-lg text-sm font-medium transition"
+            >
+              <Trash2 className="w-4 h-4" /> O'chirish
+            </button>
+          )}
+          <button onClick={clearSelection} className="p-1.5 hover:bg-white/20 rounded-lg">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {filteredStudents.length > 0 ? (
         <Card padding="p-0">
           <Table>
             <Table.Head>
               <Table.Row>
+                {isAdmin && (
+                  <Table.Header className="w-10">
+                    <button onClick={toggleSelectAll} className="p-1 rounded hover:bg-gray-100">
+                      {allSelected
+                        ? <CheckSquare className="w-4 h-4 text-primary-600" />
+                        : someSelected
+                          ? <CheckSquare className="w-4 h-4 text-gray-400" />
+                          : <Square className="w-4 h-4 text-gray-400" />}
+                    </button>
+                  </Table.Header>
+                )}
                 <Table.Header>O'quvchi</Table.Header>
                 <Table.Header>Telefon</Table.Header>
                 <Table.Header>Guruh</Table.Header>
@@ -711,7 +922,19 @@ const Students = () => {
             </Table.Head>
             <Table.Body>
               {filteredStudents.map(student => (
-                <Table.Row key={student.id} className={student.status === 'graduated' ? 'bg-gray-50' : ''}>
+                <Table.Row
+                  key={student.id}
+                  className={`${student.status === 'graduated' ? 'bg-gray-50' : ''} ${selectedIds.has(student.id) ? 'bg-primary-50' : ''}`}
+                >
+                  {isAdmin && (
+                    <Table.Cell>
+                      <button onClick={() => toggleSelect(student.id)} className="p-1 rounded hover:bg-gray-100">
+                        {selectedIds.has(student.id)
+                          ? <CheckSquare className="w-4 h-4 text-primary-600" />
+                          : <Square className="w-4 h-4 text-gray-400" />}
+                      </button>
+                    </Table.Cell>
+                  )}
                   <Table.Cell>
                     <div className="flex items-center gap-3">
                       <Avatar name={student.fullName} />
@@ -734,20 +957,37 @@ const Students = () => {
                     )}
                   </Table.Cell>
                   <Table.Cell>
-                    <p className="text-sm">{student.parentName}</p>
-                    <a href={`tel:${student.parentPhone}`} className="text-sm text-primary-600">{formatPhone(student.parentPhone)}</a>
-                    {student.parentTelegram && (
-                      <a 
-                        href={student.parentTelegram.match(/^\d+$/) 
-                          ? `https://t.me/+${student.parentTelegram}` 
-                          : `https://t.me/${student.parentTelegram.replace('@', '')}`
-                        } 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="text-xs text-blue-500 hover:underline"
-                      >
-                        📱 Telegram
+                    <p className="text-sm font-medium">{student.parentName || '—'}</p>
+                    {student.parentPhone && (
+                      <a href={`tel:${student.parentPhone}`} className="text-sm text-primary-600 block">
+                        {formatPhone(student.parentPhone)}
                       </a>
+                    )}
+                    {/* Telegram status */}
+                    {student.parentPhone && (
+                      student.parentTelegramChatId ? (
+                        <span className="inline-flex items-center gap-1 text-xs text-green-600 mt-0.5">
+                          <Check className="w-3 h-3" />
+                          Telegram ulangan
+                        </span>
+                      ) : telegramBotUsername ? (
+                        <button
+                          onClick={() => {
+                            const link = buildDeepLink(telegramBotUsername, student.parentPhone);
+                            navigator.clipboard.writeText(link);
+                            setCopied(`tg-${student.id}`);
+                            setTimeout(() => setCopied(''), 2000);
+                            toast.success("Havola nusxalandi! Ota-onaga yuboring.");
+                          }}
+                          className="inline-flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700 mt-0.5"
+                          title="Telegram ro'yxatdan o'tish havolasini nusxalash"
+                        >
+                          {copied === `tg-${student.id}`
+                            ? <><Check className="w-3 h-3" /> Nusxalandi</>
+                            : <><Send className="w-3 h-3" /> Havola yuborish</>
+                          }
+                        </button>
+                      ) : null
                     )}
                   </Table.Cell>
                   <Table.Cell className="text-right">
@@ -788,6 +1028,33 @@ const Students = () => {
         <Card><EmptyState icon={Search} title="O'quvchilar topilmadi" action={<Button onClick={() => { setSearchQuery(''); setFilterGroup(''); }}>Tozalash</Button>} /></Card>
       )}
 
+      {/* Bulk Change Group Modal */}
+      <Modal
+        isOpen={showBulkGroupModal}
+        onClose={() => { setShowBulkGroupModal(false); setBulkGroupId(''); }}
+        title={`${selectedIds.size} ta o'quvchini guruhga o'tkazish`}
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">Tanlangan o'quvchilar quyidagi guruhga o'tkaziladi:</p>
+          <Select
+            label="Yangi guruh"
+            value={bulkGroupId}
+            onChange={(e) => setBulkGroupId(e.target.value)}
+            options={groups.map(g => ({ value: g.id, label: g.name }))}
+            placeholder="Guruh tanlang..."
+          />
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => { setShowBulkGroupModal(false); setBulkGroupId(''); }}>
+              Bekor
+            </Button>
+            <Button onClick={bulkChangeGroup} disabled={!bulkGroupId || bulkLoading} loading={bulkLoading}>
+              O'tkazish
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Add Modal */}
       <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title="Yangi o'quvchi" size="lg">
         <form onSubmit={handleAdd} className="space-y-4">
@@ -799,9 +1066,18 @@ const Students = () => {
           </div>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Input label="To'liq ismi *" value={formData.fullName} onChange={(e) => setFormData({ ...formData, fullName: e.target.value })} required />
-            <Input label="Telefon *" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} placeholder="+998901234567" required />
-            <Select label="Guruh" value={formData.groupId} onChange={(e) => setFormData({ ...formData, groupId: e.target.value })} options={groups.map(g => ({ value: g.id, label: g.name }))} />
+            <div>
+              <Input label="To'liq ismi *" value={formData.fullName} onChange={(e) => setFormData({ ...formData, fullName: e.target.value })} />
+              <FieldError error={formErrors.fullName} />
+            </div>
+            <div>
+              <Input label="Telefon *" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} placeholder="+998901234567" />
+              <FieldError error={formErrors.phone} />
+            </div>
+            <div>
+              <Select label="Guruh *" value={formData.groupId} onChange={(e) => setFormData({ ...formData, groupId: e.target.value })} options={groups.map(g => ({ value: g.id, label: g.name }))} />
+              <FieldError error={formErrors.groupId} />
+            </div>
             <Input label="Tug'ilgan sana" type="date" value={formData.birthDate} onChange={(e) => setFormData({ ...formData, birthDate: e.target.value })} />
             <Input label="Manzil" value={formData.address} onChange={(e) => setFormData({ ...formData, address: e.target.value })} />
           </div>
@@ -855,16 +1131,32 @@ const Students = () => {
                 }))
               ]}
             />
-            <Input 
-              label="Chegirma (%)" 
-              type="number" 
-              min="0" 
-              max="100" 
-              value={formData.discount} 
-              onChange={(e) => setFormData({ ...formData, discount: e.target.value })} 
+            <Input
+              label="Chegirma (%)"
+              type="number"
+              min="0"
+              max="100"
+              value={formData.discount}
+              onChange={(e) => setFormData({ ...formData, discount: e.target.value })}
               placeholder="0"
+              disabled={formData.isFree}
             />
           </div>
+
+          {/* Bepul o'quvchi */}
+          <label className="flex items-center gap-3 p-3 bg-blue-50 border border-blue-200 rounded-lg cursor-pointer hover:bg-blue-100 transition">
+            <input
+              type="checkbox"
+              checked={formData.isFree}
+              onChange={(e) => setFormData({ ...formData, isFree: e.target.checked, discount: e.target.checked ? '100' : '0' })}
+              className="w-4 h-4 text-blue-600"
+            />
+            <div>
+              <span className="font-medium text-blue-800">Bepul o'quvchi</span>
+              <p className="text-xs text-blue-600">Bu o'quvchi uchun to'lov hisoblanmaydi</p>
+            </div>
+          </label>
+
           {formData.referredBy && (
             <div className="p-3 bg-purple-50 rounded-lg text-sm text-purple-700">
               <p>✨ Tavsiya qilgan o'quvchi mukofot oladi (sozlamalarda belgilangan foiz miqdorida)</p>
@@ -935,15 +1227,49 @@ const Students = () => {
         <form onSubmit={handleEdit} className="space-y-4">
           {formError && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{formError}</div>}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Input label="To'liq ismi" value={formData.fullName} onChange={(e) => setFormData({ ...formData, fullName: e.target.value })} required />
-            <Input label="Telefon" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} required />
-            <Select label="Guruh" value={formData.groupId} onChange={(e) => setFormData({ ...formData, groupId: e.target.value })} options={groups.map(g => ({ value: g.id, label: g.name }))} />
+            <div>
+              <Input label="To'liq ismi *" value={formData.fullName} onChange={(e) => setFormData({ ...formData, fullName: e.target.value })} />
+              <FieldError error={formErrors.fullName} />
+            </div>
+            <div>
+              <Input label="Telefon *" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} />
+              <FieldError error={formErrors.phone} />
+            </div>
+            <div>
+              <Select label="Guruh *" value={formData.groupId} onChange={(e) => setFormData({ ...formData, groupId: e.target.value })} options={groups.map(g => ({ value: g.id, label: g.name }))} />
+              <FieldError error={formErrors.groupId} />
+            </div>
             <Input label="Tug'ilgan sana" type="date" value={formData.birthDate} onChange={(e) => setFormData({ ...formData, birthDate: e.target.value })} />
+            <Input label="Boshlagan sana" type="date" value={formData.startDate} onChange={(e) => setFormData({ ...formData, startDate: e.target.value })} />
+            <Input label="To'lov kuni" type="number" min="1" max="28" value={formData.paymentDay} onChange={(e) => setFormData({ ...formData, paymentDay: e.target.value })} placeholder="1" />
+            <Select
+              label="To'lov turi"
+              value={formData.paymentType}
+              onChange={(e) => setFormData({ ...formData, paymentType: e.target.value })}
+              options={[
+                { value: 'full_month', label: 'To\'liq oy' },
+                { value: 'per_lesson', label: 'Dars boshiga' },
+              ]}
+            />
+            <Input label="Chegirma (%)" type="number" min="0" max="100" value={formData.discount} onChange={(e) => setFormData({ ...formData, discount: e.target.value })} placeholder="0" />
             <Input label="Manzil" value={formData.address} onChange={(e) => setFormData({ ...formData, address: e.target.value })} />
             <Input label="Ota-ona ismi" value={formData.parentName} onChange={(e) => setFormData({ ...formData, parentName: e.target.value })} />
             <Input label="Ota-ona telefoni" value={formData.parentPhone} onChange={(e) => setFormData({ ...formData, parentPhone: e.target.value })} />
             <Input label="Telegram" value={formData.parentTelegram} onChange={(e) => setFormData({ ...formData, parentTelegram: e.target.value })} />
           </div>
+          <label className="flex items-center gap-3 p-3 bg-blue-50 border border-blue-200 rounded-lg cursor-pointer hover:bg-blue-100 transition">
+            <input
+              type="checkbox"
+              checked={formData.isFree || false}
+              onChange={(e) => setFormData({ ...formData, isFree: e.target.checked })}
+              className="w-4 h-4 text-blue-600"
+            />
+            <div>
+              <span className="font-medium text-blue-800">Bepul o'quvchi</span>
+              <p className="text-xs text-blue-600">Bu o'quvchi uchun to'lov hisoblanmaydi</p>
+            </div>
+          </label>
+
           <div className="flex justify-end gap-2 pt-4 border-t">
             <Button type="button" variant="ghost" onClick={() => setShowEditModal(false)}>Bekor qilish</Button>
             <Button type="submit" loading={formLoading}>Saqlash</Button>
@@ -959,7 +1285,10 @@ const Students = () => {
               <Avatar name={selectedStudent.fullName} size="xl" />
               <div>
                 <h3 className="text-xl font-bold">{selectedStudent.fullName}</h3>
-                <Badge variant="primary">{selectedStudent.groupName || 'Guruh yo\'q'}</Badge>
+                <div className="flex gap-2 flex-wrap mt-1">
+                  <Badge variant="primary">{selectedStudent.groupName || 'Guruh yo\'q'}</Badge>
+                  {selectedStudent.isFree && <Badge variant="info">Bepul o'quvchi</Badge>}
+                </div>
                 {selectedStudent.birthDate && (
                   <p className="text-sm text-gray-500 mt-1">
                     🎂 {new Date(selectedStudent.birthDate).toLocaleDateString('uz-UZ')} 

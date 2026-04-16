@@ -19,18 +19,19 @@ const Input = forwardRef(({
   const baseInputClasses = `
     w-full px-4 py-3 rounded-xl border-2 transition-all duration-200
     focus:outline-none focus:ring-0
-    placeholder:text-gray-400
-    disabled:bg-gray-100 disabled:cursor-not-allowed
+    placeholder:text-gray-400 dark:placeholder:text-gray-500
+    dark:text-gray-100
+    disabled:bg-gray-100 dark:disabled:bg-gray-700 disabled:cursor-not-allowed
   `;
-  
+
   const stateClasses = error
-    ? 'border-red-300 focus:border-red-500 bg-red-50/50'
-    : 'border-gray-200 focus:border-primary-500 bg-white hover:border-gray-300';
+    ? 'border-red-300 focus:border-red-500 bg-red-50/50 dark:bg-red-900/20'
+    : 'border-gray-200 dark:border-gray-600 focus:border-primary-500 bg-white dark:bg-gray-700 hover:border-gray-300 dark:hover:border-gray-500';
 
   return (
     <div className={`space-y-1.5 ${containerClassName}`}>
       {label && (
-        <label className="block text-sm font-semibold text-gray-700">
+        <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300">
           {label}
           {required && <span className="text-red-500 ml-1">*</span>}
         </label>

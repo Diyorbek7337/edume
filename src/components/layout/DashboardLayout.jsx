@@ -1,15 +1,19 @@
 import { useState, useEffect } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { 
-  LayoutDashboard, Users, GraduationCap, UsersRound, UserPlus, CreditCard, 
+import {
+  LayoutDashboard, Users, GraduationCap, UsersRound, UserPlus, CreditCard,
   CalendarCheck, MessageSquare, BarChart3, Settings, LogOut, Menu, X,
   Bell, Search, ChevronDown, FileText, Send, Shield, Calendar, Star, AlertTriangle,
-  BookOpen, FileQuestion, Download, Trophy, Video, Gift, Award
+  BookOpen, FileQuestion, Download, Trophy, Video, Gift, Award, Activity
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { ROLES, ROLE_NAMES } from '../../utils/constants';
 import { Avatar } from '../common';
 import { messagesAPI, teachersAPI, studentsAPI, paymentsAPI } from '../../services/api';
+import MobileNav from './MobileNav';
+import { requestNotificationPermission } from '../../services/notifications';
+import { useTheme } from '../../contexts/ThemeContext';
+import { Moon, Sun } from 'lucide-react';
 
 const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }) => {
   const { userData, role, signOut } = useAuth();
@@ -43,6 +47,7 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
         { id: 'teacher-ratings', label: "O'qituvchi baholari", icon: Star, path: '/teacher-ratings' },
         { id: 'messages', label: 'Xabarlar', icon: MessageSquare, path: '/messages', badge: unreadCount },
         { id: 'reports', label: 'Statistika', icon: BarChart3, path: '/reports' },
+        { id: 'activity-log', label: 'Faoliyat tarixi', icon: Activity, path: '/activity-log' },
       );
     }
 
@@ -92,6 +97,9 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
 
     // O'quvchi va Ota-ona uchun
     if (role === ROLES.STUDENT || role === ROLES.PARENT) {
+      if (role === ROLES.PARENT) {
+        items.push({ id: 'parent', label: 'Farzandlarim', icon: Users, path: '/parent' });
+      }
       items.push(
         { id: 'grades', label: 'Baholarim', icon: FileText, path: '/grades' },
         { id: 'attendance', label: 'Davomatim', icon: CalendarCheck, path: '/attendance' },
@@ -122,14 +130,14 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
   const sidebarContent = (
     <>
       {/* Logo */}
-      <div className="h-16 flex items-center justify-between px-4 border-b border-gray-200">
+      <div className="h-16 flex items-center justify-between px-4 border-b border-gray-200 dark:border-gray-700">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center">
             <GraduationCap className="w-6 h-6 text-white" />
           </div>
-          {!collapsed && <span className="font-bold text-xl text-gray-900">EduCenter</span>}
+          {!collapsed && <span className="font-bold text-xl text-gray-900 dark:text-white">EduCenter</span>}
         </div>
-        <button onClick={onMobileClose || onToggle} className="lg:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-lg">
+        <button onClick={onMobileClose || onToggle} className="lg:hidden p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">
           <X className="w-5 h-5" />
         </button>
       </div>
@@ -143,7 +151,7 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
             onClick={onMobileClose}
             className={({ isActive }) => `
               flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors relative
-              ${isActive ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-100'}
+              ${isActive ? 'bg-primary-600 text-white' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'}
               ${collapsed ? 'justify-center' : ''}
             `}
           >
@@ -163,7 +171,7 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
       </nav>
 
       {/* Settings & User */}
-      <div className="p-3 border-t border-gray-200">
+      <div className="p-3 border-t border-gray-200 dark:border-gray-700">
         {/* Sozlamalar - faqat Direktor uchun */}
         {role === ROLES.DIRECTOR && (
           <NavLink
@@ -195,12 +203,12 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
         </NavLink>
 
         {/* User info */}
-        <div className={`flex items-center gap-3 p-2 bg-gray-50 rounded-lg ${collapsed ? 'justify-center' : ''}`}>
+        <div className={`flex items-center gap-3 p-2 bg-gray-50 dark:bg-gray-800 rounded-lg ${collapsed ? 'justify-center' : ''}`}>
           <Avatar name={userData?.fullName} size="sm" />
           {!collapsed && (
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-gray-900 truncate">{userData?.fullName}</p>
-              <p className="text-xs text-gray-500">{ROLE_NAMES[role]}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">{ROLE_NAMES[role]}</p>
             </div>
           )}
           <button onClick={handleSignOut} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg" title="Chiqish">
@@ -214,7 +222,7 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
   return (
     <>
       {/* Desktop Sidebar */}
-      <aside className={`hidden lg:flex flex-col fixed left-0 top-0 h-screen bg-white border-r border-gray-200 transition-all z-40 ${collapsed ? 'w-20' : 'w-64'}`}>
+      <aside className={`hidden lg:flex flex-col fixed left-0 top-0 h-screen bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700 transition-all z-40 ${collapsed ? 'w-20' : 'w-64'}`}>
         {sidebarContent}
       </aside>
 
@@ -222,7 +230,7 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
       {mobileOpen && (
         <>
           <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={onMobileClose} />
-          <aside className="fixed left-0 top-0 h-screen w-64 bg-white border-r border-gray-200 z-50 lg:hidden flex flex-col">
+          <aside className="fixed left-0 top-0 h-screen w-64 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700 z-50 lg:hidden flex flex-col">
             {sidebarContent}
           </aside>
         </>
@@ -233,10 +241,11 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
 
 const Header = ({ onMenuClick, unreadCount }) => {
   const { userData, centerData } = useAuth();
+  const { isDark, toggleTheme } = useTheme();
   const navigate = useNavigate();
 
   return (
-    <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 lg:px-6">
+    <header className="h-16 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 lg:px-6">
       <div className="flex items-center gap-4">
         <button onClick={onMenuClick} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg lg:hidden">
           <Menu className="w-5 h-5" />
@@ -259,16 +268,25 @@ const Header = ({ onMenuClick, unreadCount }) => {
           <input
             type="text"
             placeholder="Qidirish..."
-            className="pl-10 pr-4 py-2 w-64 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+            className="pl-10 pr-4 py-2 w-64 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 dark:text-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
           />
         </div>
       </div>
 
       <div className="flex items-center gap-3">
+        {/* Dark mode toggle */}
+        <button
+          onClick={toggleTheme}
+          className="p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+          title={isDark ? "Yorug' rejim" : "Qoʻngʻir rejim"}
+        >
+          {isDark ? <Sun className="w-5 h-5 text-yellow-400" /> : <Moon className="w-5 h-5" />}
+        </button>
+
         {/* Notifications */}
-        <button 
+        <button
           onClick={() => navigate('/messages')}
-          className="relative p-2 text-gray-500 hover:bg-gray-100 rounded-lg"
+          className="relative p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
         >
           <Bell className="w-5 h-5" />
           {unreadCount > 0 && (
@@ -398,6 +416,13 @@ const DashboardLayout = () => {
     checkPaymentStatus();
   }, [userData, role, alertDismissed, navigate]);
 
+  // Student/Parent uchun notification ruxsat so'rash
+  useEffect(() => {
+    if (role === ROLES.STUDENT || role === ROLES.PARENT) {
+      requestNotificationPermission();
+    }
+  }, [role]);
+
   // Xabarlarni tekshirish
   useEffect(() => {
     const checkUnreadMessages = async () => {
@@ -458,7 +483,7 @@ const DashboardLayout = () => {
   }, [userData, role]);
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-950 transition-colors">
       <Sidebar 
         collapsed={collapsed} 
         onToggle={() => setCollapsed(!collapsed)}
@@ -511,10 +536,12 @@ const DashboardLayout = () => {
           </div>
         )}
         
-        <main className="p-4 lg:p-6">
+        <main className="p-4 lg:p-6 pb-24 md:pb-6">
           <Outlet />
         </main>
       </div>
+
+      <MobileNav unreadCount={unreadCount} />
     </div>
   );
 };

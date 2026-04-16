@@ -3,13 +3,15 @@ import { Search, Plus, Edit, Trash2, GraduationCap, AlertTriangle } from 'lucide
 import { Card, Button, Input, Badge, Avatar, Modal, Loading, EmptyState } from '../components/common';
 import { teachersAPI, groupsAPI, usersAPI } from '../services/api';
 import { formatPhone } from '../utils/helpers';
+import { validateTeacherForm, hasErrors } from '../utils/validation';
 import { ROLES } from '../utils/constants';
 import { checkLimit, SUBSCRIPTION_PLANS } from '../utils/subscriptions';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'react-toastify';
+import { activityLogAPI, LOG_ACTIONS } from '../services/activityLog';
 
 const Teachers = () => {
-  const { centerData, role } = useAuth();
+  const { centerData, role, userData } = useAuth();
   const [teachers, setTeachers] = useState([]);
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -53,12 +55,11 @@ const Teachers = () => {
 
   const handleAdd = async (e) => {
     e.preventDefault();
-    
+    const errors = validateTeacherForm(formData);
     if (!formData.password || formData.password.length < 6) {
-      setFormError("Parol kamida 6 ta belgidan iborat bo'lishi kerak");
-      return;
+      errors.password = "Parol kamida 6 ta belgidan iborat bo'lishi kerak";
     }
-    
+    if (hasErrors(errors)) { setFormError(Object.values(errors)[0]); return; }
     setFormLoading(true);
     setFormError('');
     
@@ -88,6 +89,14 @@ const Teachers = () => {
       setTeachers([newTeacher, ...teachers]);
       setShowAddModal(false);
       resetForm();
+
+      activityLogAPI.log({
+        action: LOG_ACTIONS.TEACHER_ADDED.key,
+        entityType: 'teacher',
+        entityName: formData.fullName,
+        details: { subject: formData.subject },
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
     } catch (err) {
       console.error('Teacher add error:', err);
       if (err.code === 'auth/email-already-in-use') {
@@ -106,6 +115,8 @@ const Teachers = () => {
 
   const handleEdit = async (e) => {
     e.preventDefault();
+    const errors = validateTeacherForm(formData);
+    if (hasErrors(errors)) { setFormError(Object.values(errors)[0]); return; }
     setFormLoading(true);
     setFormError('');
     
@@ -121,10 +132,17 @@ const Teachers = () => {
         phone: formData.phone,
         subject: formData.subject 
       } : t));
+      activityLogAPI.log({
+        action: LOG_ACTIONS.TEACHER_UPDATED.key,
+        entityType: 'teacher',
+        entityName: formData.fullName,
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
+
       setShowEditModal(false);
       resetForm();
-    } catch (err) { 
-      setFormError("Xatolik yuz berdi"); 
+    } catch (err) {
+      setFormError("Xatolik yuz berdi");
     }
     finally { setFormLoading(false); }
   };
@@ -142,11 +160,18 @@ const Teachers = () => {
         if (teacherUser) {
           await usersAPI.delete(teacherUser.id);
         }
-      } catch (err) { console.log('User delete warning:', err); }
+      } catch (err) { console.error("Delete warning:", err); }
       
       setTeachers(teachers.filter(t => t.id !== selectedTeacher.id));
       setShowDeleteModal(false);
       toast.success("O'qituvchi o'chirildi");
+
+      activityLogAPI.log({
+        action: LOG_ACTIONS.TEACHER_DELETED.key,
+        entityType: 'teacher',
+        entityName: selectedTeacher.fullName,
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
     } catch (err) { 
       console.error(err);
       toast.error("O'chirishda xatolik"); 

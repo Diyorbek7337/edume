@@ -1,16 +1,20 @@
-import { useState, useEffect } from 'react';
-import { 
-  Search, Plus, CreditCard, CheckCircle, Clock, AlertTriangle, Eye, 
+import { useState, useEffect, useRef } from 'react';
+import { validatePaymentForm, hasErrors } from '../utils/validation';
+import {
+  Search, Plus, CreditCard, CheckCircle, Clock, AlertTriangle, Eye,
   Users, Wallet, TrendingUp, Filter, Calendar, History, ArrowRight,
   DollarSign, PieChart, AlertCircle, ChevronDown, ChevronUp, Receipt,
-  Bell, Send, MessageCircle, Phone
+  Bell, Send, MessageCircle, Phone, CheckSquare, Square, X
 } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Avatar, Table, Modal, Loading } from '../components/common';
-import { paymentsAPI, studentsAPI, groupsAPI, settingsAPI, messagesAPI, teachersAPI } from '../services/api';
+import { paymentsAPI, studentsAPI, groupsAPI, settingsAPI, messagesAPI, teachersAPI, usersAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
 import { formatMoney, formatDate } from '../utils/helpers';
 import { toast } from 'react-toastify';
+import { activityLogAPI, LOG_ACTIONS } from '../services/activityLog';
+import { sendTelegramMessage, buildPaymentReminderText } from '../services/telegram';
+import { getPendingReminders, sendAllReminders } from '../services/autoReminder';
 
 const Payments = () => {
   const { userData, role } = useAuth();
@@ -30,7 +34,16 @@ const Payments = () => {
   const [formLoading, setFormLoading] = useState(false);
   const [reminderLoading, setReminderLoading] = useState(false);
   const [settings, setSettings] = useState({});
-  const [selectedMonth, setSelectedMonth] = useState('');
+
+  // Auto-reminder
+  const [pendingReminders, setPendingReminders] = useState([]);
+  const [autoSending, setAutoSending]           = useState(false);
+  const [autoProgress, setAutoProgress]         = useState(null); // { done, total }
+  const [reminderDismissed, setReminderDismissed] = useState(false);
+  const now = new Date();
+  const [selectedMonth, setSelectedMonth] = useState(
+    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  );
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterGroup, setFilterGroup] = useState('all');
   const [expandedStudents, setExpandedStudents] = useState({});
@@ -59,11 +72,12 @@ const Payments = () => {
   const isAdmin = role === ROLES.ADMIN || role === ROLES.DIRECTOR;
   const isTeacher = role === ROLES.TEACHER;
   const isStudentOrParent = role === ROLES.STUDENT || role === ROLES.PARENT;
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
-    const now = new Date();
-    setSelectedMonth(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`);
+    isMountedRef.current = true;
     fetchData();
+    return () => { isMountedRef.current = false; };
   }, []);
 
   const fetchData = async () => {
@@ -109,7 +123,6 @@ const Payments = () => {
           }
         }
         
-        console.log('Student/Parent found:', student?.fullName, 'id:', student?.id);
         
         if (student) {
           studentId = student.id;
@@ -133,7 +146,6 @@ const Payments = () => {
             billsData = [];
           }
           
-          console.log('Student payments:', paymentsData.length, 'bills:', billsData.length);
         }
       } else if (isTeacher) {
         // O'qituvchi - faqat o'z guruhlari o'quvchilarini
@@ -141,11 +153,9 @@ const Payments = () => {
         const userEmail = userData?.email;
         const userPhone = userData?.phone;
         const userFullName = userData?.fullName;
-        console.log('Teacher - userId:', userId, 'email:', userEmail, 'name:', userFullName);
         
         // Teachers jadvalidan o'qituvchini topish - email, phone yoki ism bo'yicha
         const allTeachers = await teachersAPI.getAll();
-        console.log('All teachers:', allTeachers.map(t => ({ id: t.id, email: t.email, name: t.fullName })));
         
         let teacher = allTeachers.find(t => t.email === userEmail);
         if (!teacher && userPhone) {
@@ -156,11 +166,9 @@ const Payments = () => {
         }
         
         const teacherId = teacher?.id;
-        console.log('Found teacher in teachers collection:', teacher?.fullName, 'teacherId:', teacherId);
         
         // Barcha guruhlarni olib, teacher bo'yicha filter
         const allGroups = await groupsAPI.getAll();
-        console.log('All groups teacherIds:', allGroups.map(g => ({ name: g.name, teacherId: g.teacherId })));
         
         // teacherId - teachers jadvalidagi ID bo'lishi kerak
         groupsData = allGroups.filter(g => 
@@ -169,7 +177,6 @@ const Payments = () => {
           g.teacherEmail === userEmail  // Email bo'yicha
         );
         
-        console.log('Teacher groups:', groupsData.length, groupsData.map(g => g.name));
         
         const groupIds = groupsData.map(g => g.id);
         
@@ -179,7 +186,6 @@ const Payments = () => {
           ? allStudents.filter(s => groupIds.includes(s.groupId) && s.status === 'active')
           : []; // Agar guruh yo'q bo'lsa, o'quvchilar ham bo'lmasin
         
-        console.log('Teacher students:', studentsData.length);
         
         const studentIds = studentsData.map(s => s.id);
         
@@ -212,24 +218,35 @@ const Payments = () => {
         }
       }
 
+      if (!isMountedRef.current) return;
       setStudents(studentsData);
       setGroups(groupsData);
       setPayments(paymentsData);
-      
+
       // Eski to'lovlarni monthly_bills formatiga o'tkazish
       const convertedBills = convertOldPaymentsToBills(paymentsData, billsData || [], studentsData, groupsData, settingsData);
       setMonthlyBills(convertedBills);
+
+      // Auto-reminder: faqat admin/direktor uchun
+      if (settingsData?.telegramEnabled || true) {
+        const pending = getPendingReminders(
+          studentsData.filter(s => s.status === 'active'),
+          convertedBills,
+          settingsData || {}
+        );
+        setPendingReminders(pending);
+      }
     } catch (err) {
+      if (!isMountedRef.current) return;
       console.error('fetchData error:', err);
       toast.error("Ma'lumotlarni yuklashda xatolik");
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   };
 
   // Eski payments dan monthly_bills yaratish
   const convertOldPaymentsToBills = (oldPayments, existingBills, studentsData, groupsData, settingsData) => {
-    console.log('convertOldPaymentsToBills - payments:', oldPayments.length, 'existingBills:', existingBills?.length);
     
     const billsMap = {};
     
@@ -254,19 +271,16 @@ const Payments = () => {
     // Eski to'lovlarni tekshirish
     oldPayments.forEach(payment => {
       if (!payment.studentId || payment.type === 'expense') {
-        console.log('Skipping payment - no studentId or expense:', payment.id);
         return;
       }
       
       // Agar bu to'lov allaqachon monthly_bills ga qo'shilgan bo'lsa, o'tkazib yuborish
       if (processedPaymentIds.has(payment.id)) {
-        console.log('Skipping payment - already processed:', payment.id);
         return;
       }
       
       // MUHIM: Yangi tizimda qo'shilgan to'lovlarni o'tkazib yuborish
       if (payment.alreadyInMonthlyBill === true) {
-        console.log('Skipping payment - alreadyInMonthlyBill:', payment.id);
         return;
       }
       
@@ -382,21 +396,55 @@ const Payments = () => {
 
     const student = students.find(s => s.id === studentId);
     const group = groups.find(g => g.id === student?.groupId);
-    
+
+    // Bepul o'quvchi — to'lov hisoblanmaydi
+    if (student?.isFree) {
+      return {
+        studentId,
+        month,
+        totalAmount: 0,
+        paidAmount: 0,
+        remainingAmount: 0,
+        status: 'paid',
+        payments: [],
+        isVirtual: true,
+        isFree: true,
+        groupName: group?.name || '',
+        studentName: student?.fullName || ''
+      };
+    }
+
     // MUHIM: Guruhning monthlyFee yoki price ni olish
     const groupMonthlyFee = parseInt(group?.monthlyFee) || parseInt(group?.price) || 0;
     const defaultFee = parseInt(settings.defaultMonthlyFee) || 500000;
     const monthlyFee = groupMonthlyFee > 0 ? groupMonthlyFee : defaultFee;
 
+    // Pro-rated hisob-kitob: o'quvchi oyning o'rtasida boshlagan bo'lsa
+    let billAmount = monthlyFee;
+    let isProrated = false;
+    if (student?.startDate) {
+      const startDate = new Date(student.startDate);
+      const startMonth = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}`;
+      if (startMonth === month) {
+        const [y, m] = month.split('-');
+        const daysInMonth = new Date(parseInt(y), parseInt(m), 0).getDate();
+        const startDay = startDate.getDate();
+        const remainingDays = daysInMonth - startDay + 1;
+        billAmount = Math.round(monthlyFee * remainingDays / daysInMonth);
+        isProrated = true;
+      }
+    }
+
     return {
       studentId,
       month,
-      totalAmount: monthlyFee,
+      totalAmount: billAmount,
       paidAmount: 0,
-      remainingAmount: monthlyFee,
+      remainingAmount: billAmount,
       status: 'pending',
       payments: [],
       isVirtual: true,
+      isProrated,
       groupName: group?.name || '',
       studentName: student?.fullName || ''
     };
@@ -406,113 +454,109 @@ const Payments = () => {
   const getStudentBills = (studentId) => {
     const studentBills = monthlyBills.filter(b => b.studentId === studentId);
     const student = students.find(s => s.id === studentId);
-    
-    // Joriy oy
-    const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    
-    // Agar o'quvchi shu oyda boshlagan bo'lsa, faqat joriy oyni ko'rsatish
+    const currentMonth = selectedMonth;
+
+    // O'quvchi boshlagan oy
     const startDate = student?.startDate ? new Date(student.startDate) : null;
-    const startMonth = startDate ? `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}` : null;
-    
-    // Faqat joriy oyni ko'rsatish (qarz bo'lsa boshqa oylar ham ko'rinadi)
-    const currentBill = studentBills.find(b => b.month === currentMonth) || getOrCreateMonthlyBill(studentId, currentMonth);
-    
-    // Qarzi bor oylarni ham qo'shish
-    const debtBills = studentBills.filter(b => b.month !== currentMonth && b.remainingAmount > 0);
-    
-    // To'langan oylar (oxirgi 2 ta)
-    const paidBills = studentBills
-      .filter(b => b.month !== currentMonth && b.status === 'paid')
+    const startMonth = startDate
+      ? `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}`
+      : currentMonth;
+
+    // startMonth dan currentMonth gacha barcha oylar uchun bill olish yoki yaratish
+    const allMonthBills = [];
+    const cursor = new Date(startMonth + '-01');
+    const endDate = new Date(currentMonth + '-01');
+
+    while (cursor <= endDate) {
+      const m = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+      const existing = studentBills.find(b => b.month === m);
+      allMonthBills.push(existing || getOrCreateMonthlyBill(studentId, m));
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+
+    // startMonth dan OLDINGI oylar: to'lanmagan DB qarzlar ham ko'rsatiladi
+    const olderUnpaidBills = studentBills
+      .filter(b => b.month < startMonth && (b.remainingAmount || 0) > 0);
+
+    // To'langan eski oylar (oxirgi 2 ta, tarix uchun)
+    const olderPaidBills = studentBills
+      .filter(b => b.month < startMonth && b.status === 'paid')
       .sort((a, b) => b.month.localeCompare(a.month))
       .slice(0, 2);
-    
-    // Barcha billlarni birlashtirish
-    const allBills = [currentBill, ...debtBills, ...paidBills];
-    
-    // Unique qilish va tartiblash
-    const uniqueBills = allBills.filter((bill, index, self) => 
+
+    const allBills = [...allMonthBills, ...olderUnpaidBills, ...olderPaidBills];
+
+    // Unique va tartiblash
+    const uniqueBills = allBills.filter((bill, index, self) =>
       index === self.findIndex(b => b.month === bill.month)
     );
-    
+
     return uniqueBills.sort((a, b) => b.month.localeCompare(a.month));
   };
 
-  // O'quvchi umumiy qarz (faqat joriy oy)
+  // O'quvchi umumiy qarz (virtual billlarni ham hisobga oladi)
   const getStudentTotalDebt = (studentId) => {
-    const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const currentBill = monthlyBills.find(b => b.studentId === studentId && b.month === currentMonth) 
-      || getOrCreateMonthlyBill(studentId, currentMonth);
-    
-    // Joriy oy + o'tgan oylarning qarzi
-    const pastDebt = monthlyBills
-      .filter(b => b.studentId === studentId && b.month < currentMonth && b.remainingAmount > 0)
+    const allBills = getStudentBills(studentId);
+    return allBills
+      .filter(b => b.month <= selectedMonth)
       .reduce((sum, b) => sum + (b.remainingAmount || 0), 0);
-    
-    return (currentBill.remainingAmount || 0) + pastDebt;
   };
 
   // O'quvchi to'lov holati
   const getStudentPaymentStatus = (student) => {
-    const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    
-    // Joriy oy uchun bill
-    const currentBill = monthlyBills.find(b => b.studentId === student.id && b.month === currentMonth);
-    
-    // O'tgan oylarning qarzi
-    const pastDebt = monthlyBills
-      .filter(b => b.studentId === student.id && b.month < currentMonth && b.remainingAmount > 0)
+    if (student.isFree) {
+      return { status: 'free', label: 'Bepul', color: 'info', debt: 0 };
+    }
+    const currentMonth = selectedMonth;
+
+    // Barcha billlarni olish (virtual + DB, startDate dan currentMonth gacha)
+    const allBills = getStudentBills(student.id);
+
+    // Tanlangan oy uchun bill
+    const currentBill = allBills.find(b => b.month === currentMonth)
+      || getOrCreateMonthlyBill(student.id, currentMonth);
+
+    // O'tgan oylarning qarzi (virtual billlarni ham qo'shib)
+    const pastDebt = allBills
+      .filter(b => b.month < currentMonth && (b.remainingAmount || 0) > 0)
       .reduce((sum, b) => sum + (b.remainingAmount || 0), 0);
-    
-    // Joriy oy qarzi
-    const currentDebt = currentBill ? (currentBill.remainingAmount || 0) : 0;
-    
-    // Agar joriy oy uchun to'lov qilingan bo'lsa
-    if (currentBill && currentBill.status === 'paid') {
+
+    const currentDebt = currentBill.remainingAmount || 0;
+
+    if (currentBill.status === 'paid') {
       if (pastDebt > 0) {
         return { status: 'debtor', label: 'Qarzdor', color: 'danger', debt: pastDebt };
       }
       return { status: 'paid', label: "To'langan", color: 'success', debt: 0 };
     }
-    
-    // Qisman to'langan
-    if (currentBill && currentBill.status === 'partial') {
+
+    if (currentBill.status === 'partial') {
       return { status: 'partial', label: 'Qisman', color: 'warning', debt: currentDebt + pastDebt };
     }
-    
-    // O'tgan oylar uchun qarz bor
+
     if (pastDebt > 0) {
       return { status: 'debtor', label: 'Qarzdor', color: 'danger', debt: currentDebt + pastDebt };
     }
-    
-    // Joriy oy - hech narsa to'lanmagan
-    // O'quvchi qachon boshlagan tekshirish
-    const startDate = student.startDate ? new Date(student.startDate) : null;
-    const startMonth = startDate ? `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}` : null;
-    
-    // Agar o'quvchi joriy oyda boshlagan bo'lsa yoki bill mavjud emas
-    if (!currentBill) {
-      // Virtual bill yaratish
-      const virtualBill = getOrCreateMonthlyBill(student.id, currentMonth);
-      return { status: 'pending', label: 'Kutilmoqda', color: 'warning', debt: virtualBill.totalAmount };
-    }
-    
+
     return { status: 'pending', label: 'Kutilmoqda', color: 'warning', debt: currentDebt };
   };
 
   // To'lov qilish
   const handlePayment = async (e) => {
     e.preventDefault();
-    if (!selectedStudent || !paymentForm.amount) {
-      toast.error("Summani kiriting");
+    const errors = validatePaymentForm(paymentForm);
+    if (hasErrors(errors)) {
+      toast.error(Object.values(errors)[0]);
+      return;
+    }
+    if (!selectedStudent) {
+      toast.error("O'quvchi tanlanmagan");
       return;
     }
 
     setFormLoading(true);
     try {
-      const paidAmount = parseInt(paymentForm.amount); // O'quvchi bergan summa
+      const paidAmount = Math.round(Number(paymentForm.amount)); // O'quvchi bergan summa (butun son, so'm)
       const discount = paymentForm.discount || 0;
       const discountType = paymentForm.discountType || 'percent';
       
@@ -646,6 +690,14 @@ const Payments = () => {
         return [...filtered, ...updatedBills];
       });
 
+      activityLogAPI.log({
+        action: LOG_ACTIONS.PAYMENT_ADDED.key,
+        entityType: 'payment',
+        entityName: student?.fullName || selectedStudent?.fullName || '',
+        details: { amount: paidAmount, method: paymentForm.method, groupName: group?.name || '' },
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
+
       setShowPaymentModal(false);
       setPaymentForm({ amount: '', method: 'Naqd', description: '', discount: 0, discountType: 'percent' });
       setSelectedStudent(null);
@@ -659,12 +711,46 @@ const Payments = () => {
     }
   };
 
+  // ==================== AUTO BULK REMINDER ====================
+  const handleSendAllReminders = async () => {
+    if (autoSending || pendingReminders.length === 0) return;
+    setAutoSending(true);
+    setAutoProgress({ done: 0, total: pendingReminders.length });
+
+    const { sent, telegram, failed } = await sendAllReminders(
+      pendingReminders,
+      settings,
+      userData,
+      (done, total) => setAutoProgress({ done, total })
+    );
+
+    // Update local student state so sent ones disappear from pending list
+    setStudents(prev =>
+      prev.map(s =>
+        pendingReminders.find(r => r.id === s.id)
+          ? { ...s, lastReminderSent: new Date().toISOString() }
+          : s
+      )
+    );
+    setPendingReminders([]);
+    setAutoSending(false);
+    setAutoProgress(null);
+    setReminderDismissed(true);
+
+    const tgNote = telegram > 0 ? `, ${telegram} ta Telegram` : '';
+    if (failed === 0) {
+      toast.success(`${sent} ta eslatma yuborildi${tgNote}!`);
+    } else {
+      toast.warning(`${sent} ta yuborildi${tgNote}, ${failed} ta xatolik`);
+    }
+  };
+
   // To'lov eslatmasi yuborish
   const openReminderModal = (student) => {
     setSelectedStudent(student);
     setReminderForm({
       sendToProfile: true,
-      sendToTelegram: !!student.parentTelegram,
+      sendToTelegram: !!(student.parentTelegramChatId && settings.telegramBotToken),
       sendToSMS: false,
       customMessage: ''
     });
@@ -707,48 +793,64 @@ const Payments = () => {
         });
         sentCount++;
         
-        // Agar ota-ona bog'langan bo'lsa, ularga ham
-        if (selectedStudent.parentId) {
-          await messagesAPI.create({
-            title: "💰 To'lov eslatmasi",
-            content: message,
-            type: 'payment_reminder',
-            priority: 'high',
-            recipientType: 'parent',
-            recipientId: selectedStudent.parentId,
-            recipientIds: [selectedStudent.parentId],
-            senderId: userData?.id,
-            senderName: userData?.fullName,
-            studentId: selectedStudent.id,
-            studentName: selectedStudent.fullName,
-            debt: debt,
-            read: false
-          });
+        // Agar ota-ona telefoni bo'lsa, ota-onani topib xabar yuborish
+        if (selectedStudent.parentPhone) {
+          try {
+            const cleanPhone = selectedStudent.parentPhone.replace(/\D/g, '');
+            const parentEmail = `parent${cleanPhone}@edu.local`;
+            const allUsers = await usersAPI.getAll();
+            const parentUser = allUsers.find(u => u.email === parentEmail || u.phone === selectedStudent.parentPhone);
+            if (parentUser) {
+              await messagesAPI.create({
+                title: "💰 To'lov eslatmasi",
+                content: message,
+                type: 'payment_reminder',
+                priority: 'high',
+                recipientType: 'parent',
+                recipientId: parentUser.id,
+                recipientIds: [parentUser.id],
+                senderId: userData?.id,
+                senderName: userData?.fullName,
+                studentId: selectedStudent.id,
+                studentName: selectedStudent.fullName,
+                debt: debt,
+                read: false
+              });
+            }
+          } catch (parentErr) {
+            console.error('Parent message error:', parentErr);
+          }
         }
       }
       
       // 2. Telegramga yuborish
-      if (reminderForm.sendToTelegram && selectedStudent.parentTelegram) {
-        // Telegram bot orqali yuborish (keyinroq qo'shiladi)
-        // Hozircha faqat link yaratamiz
-        const telegramLink = selectedStudent.parentTelegram.match(/^\d+$/)
-          ? `https://t.me/+${selectedStudent.parentTelegram}`
-          : `https://t.me/${selectedStudent.parentTelegram.replace('@', '')}`;
-        
-        // Clipboard ga nusxalash
-        const telegramMessage = message.replace(/\n/g, '%0A');
-        await navigator.clipboard.writeText(message);
-        
-        toast.info(
-          <div>
-            <p>Xabar nusxalandi!</p>
-            <a href={telegramLink} target="_blank" rel="noopener noreferrer" className="text-blue-500 underline">
-              Telegram ochish →
-            </a>
-          </div>,
-          { autoClose: 5000 }
-        );
-        sentCount++;
+      if (reminderForm.sendToTelegram) {
+        const token = settings.telegramBotToken;
+        const chatId = selectedStudent.parentTelegramChatId;
+
+        if (token && chatId) {
+          // Bot ulangan — to'g'ridan-to'g'ri yuborish
+          try {
+            const tgText = buildPaymentReminderText({
+              studentName: selectedStudent.fullName,
+              debt,
+              centerName: settings.centerName,
+            });
+            await sendTelegramMessage(token, chatId, tgText);
+            sentCount++;
+            toast.success("Telegram xabari yuborildi!");
+          } catch (tgErr) {
+            toast.error("Telegram xatolik: " + tgErr.message);
+          }
+        } else if (!token) {
+          toast.warning("Telegram bot sozlanmagan. Sozlamalar sahifasiga o'ting.");
+        } else {
+          // chatId yo'q — ota-ona botga ro'yxatdan o'tmagan
+          toast.warning(
+            "Bu ota-onaning Telegram chat ID'si yo'q. Avval ota-onaga ro'yxatdan o'tish havolasini yuboring.",
+            { autoClose: 6000 }
+          );
+        }
       }
       
       // 3. SMS yuborish (keyinroq qo'shiladi)
@@ -827,9 +929,8 @@ const Payments = () => {
 
   // Statistika
   const getStats = () => {
-    const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    
+    const currentMonth = selectedMonth;
+
     let totalDebt = 0;
     let totalPaid = 0;
     let debtors = 0;      // Qarz bor (to'lamagan)
@@ -891,6 +992,119 @@ const Payments = () => {
       ...prev,
       [studentId]: !prev[studentId]
     }));
+  };
+
+  // ==================== BULK ACTIONS ====================
+  const [selectedStudentIds, setSelectedStudentIds] = useState(new Set());
+  const [bulkActionLoading, setBulkActionLoading] = useState(false);
+
+  const debtorIds = filteredStudents.filter(s => {
+    const st = getStudentPaymentStatus(s);
+    return st.debt > 0;
+  }).map(s => s.id);
+
+  const allDebtorsSelected = debtorIds.length > 0 && debtorIds.every(id => selectedStudentIds.has(id));
+  const someBulkSelected = selectedStudentIds.size > 0;
+
+  const toggleBulkSelectAll = () => {
+    if (allDebtorsSelected) {
+      setSelectedStudentIds(new Set());
+    } else {
+      setSelectedStudentIds(new Set(debtorIds));
+    }
+  };
+
+  const toggleBulkSelect = (id) => {
+    setSelectedStudentIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const clearBulkSelection = () => setSelectedStudentIds(new Set());
+
+  // Bulk: bu oyda tanlangan o'quvchilarning qarzini to'langan deb belgilash
+  const bulkMarkPaid = async () => {
+    if (!window.confirm(`${selectedStudentIds.size} ta o'quvchining ${getMonthName(selectedMonth)} oyi to'lovini to'liq to'langan deb belgilaysizmi?`)) return;
+    setBulkActionLoading(true);
+    let success = 0;
+    try {
+      for (const studentId of selectedStudentIds) {
+        const student = students.find(s => s.id === studentId);
+        if (!student) continue;
+        const bill = monthlyBills.find(b => b.studentId === studentId && b.month === selectedMonth);
+        if (bill && bill.status !== 'paid') {
+          const remaining = bill.remainingAmount || bill.totalAmount || 0;
+          if (remaining > 0) {
+            await paymentsAPI.markBillPaid(bill.id, {
+              amount: remaining,
+              method: 'Naqd',
+              description: 'Toplu to\'lov',
+              paidBy: userData?.fullName,
+              paidAt: new Date().toISOString(),
+            });
+            success++;
+          }
+        }
+      }
+      toast.success(`${success} ta o'quvchi to'lovi belgilandi`);
+      clearBulkSelection();
+      await fetchData();
+    } catch (err) {
+      toast.error("Xatolik yuz berdi");
+    } finally {
+      setBulkActionLoading(false);
+    }
+  };
+
+  // Bulk: tanlangan o'quvchilarga eslatma yuborish
+  const bulkSendReminders = async () => {
+    if (selectedStudentIds.size === 0) return;
+    setBulkActionLoading(true);
+    let sent = 0;
+    try {
+      for (const studentId of selectedStudentIds) {
+        const student = students.find(s => s.id === studentId);
+        if (!student) continue;
+        const debt = getStudentTotalDebt(studentId);
+        const group = groups.find(g => g.id === student.groupId);
+        const msg = `Hurmatli ${student.parentName || student.fullName}!\n\n` +
+          `${student.fullName}ning "${group?.name || 'Guruh'}" to'lov eslatmasi.\n` +
+          `💰 Qarz: ${formatMoney(debt)}\n` +
+          `📅 ${getMonthName(selectedMonth)}\n\n` +
+          `Iltimos, to'lovni amalga oshiring.\n— ${settings.centerName || "O'quv markazi"}`;
+        await messagesAPI.create({
+          title: "💰 To'lov eslatmasi",
+          content: msg,
+          type: 'payment_reminder',
+          priority: 'high',
+          recipientType: 'student',
+          recipientId: studentId,
+          recipientIds: [studentId],
+          senderId: userData?.id,
+          senderName: userData?.fullName,
+          debt,
+          read: false,
+        });
+        if (student.parentTelegramChatId && settings.telegramBotToken) {
+          try {
+            await sendTelegramMessage(
+              settings.telegramBotToken,
+              student.parentTelegramChatId,
+              buildPaymentReminderText({ studentName: student.fullName, debt, centerName: settings.centerName, month: getMonthName(selectedMonth) })
+            );
+          } catch { /* silent */ }
+        }
+        sent++;
+      }
+      toast.success(`${sent} ta o'quvchiga eslatma yuborildi`);
+      clearBulkSelection();
+    } catch (err) {
+      toast.error("Xatolik yuz berdi");
+    } finally {
+      setBulkActionLoading(false);
+    }
   };
 
   // Oy nomlari
@@ -980,7 +1194,6 @@ const Payments = () => {
     const studentBills = getStudentBills(studentId);
     const totalDebt = getStudentTotalDebt(studentId);
     
-    console.log('Rendering student view - student:', student?.fullName, 'id:', studentId, 'bills:', studentBills.length, 'debt:', totalDebt);
     
     return (
       <div className="space-y-6 animate-fade-in">
@@ -1193,6 +1406,87 @@ const Payments = () => {
   // ========== ADMIN / DIREKTOR KO'RINISHI ==========
   return (
     <div className="space-y-6 animate-fade-in">
+
+      {/* ===== AUTO-REMINDER PANEL ===== */}
+      {isAdmin && pendingReminders.length > 0 && !reminderDismissed && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="flex-shrink-0 w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center mt-0.5">
+                <Bell className="w-5 h-5 text-amber-600" />
+              </div>
+              <div>
+                <p className="font-semibold text-amber-900">
+                  {pendingReminders.length} ta o'quvchiga to'lov eslatmasi yuborilmagan
+                </p>
+                <p className="text-sm text-amber-700 mt-0.5">
+                  Bugun to'lov muddati yaqinlashgan yoki o'tib ketgan o'quvchilar
+                  {settings.telegramBotToken
+                    ? ` — Telegram ulangan o'quvchilarga bot orqali yuboriladi`
+                    : ` — faqat tizim ichida xabar yuboriladi`}
+                </p>
+
+                {/* Preview list — max 5 */}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {pendingReminders.slice(0, 5).map(s => (
+                    <span key={s.id} className="inline-flex items-center gap-1 text-xs bg-white border border-amber-200 rounded-full px-2.5 py-1 text-amber-800">
+                      {s.fullName}
+                      <span className="text-amber-500 font-medium">
+                        {Number(s.debt).toLocaleString()} so'm
+                      </span>
+                      {s.parentTelegramChatId && settings.telegramBotToken && (
+                        <Send className="w-3 h-3 text-blue-500 ml-0.5" />
+                      )}
+                    </span>
+                  ))}
+                  {pendingReminders.length > 5 && (
+                    <span className="text-xs text-amber-600 self-center">
+                      + {pendingReminders.length - 5} ta
+                    </span>
+                  )}
+                </div>
+
+                {/* Progress bar while sending */}
+                {autoProgress && (
+                  <div className="mt-3">
+                    <div className="flex justify-between text-xs text-amber-700 mb-1">
+                      <span>Yuborilmoqda...</span>
+                      <span>{autoProgress.done}/{autoProgress.total}</span>
+                    </div>
+                    <div className="w-full bg-amber-200 rounded-full h-1.5">
+                      <div
+                        className="bg-amber-500 h-1.5 rounded-full transition-all duration-300"
+                        style={{ width: `${(autoProgress.done / autoProgress.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                onClick={() => setReminderDismissed(true)}
+                className="text-amber-500 hover:text-amber-700 text-sm px-2 py-1"
+                disabled={autoSending}
+              >
+                Keyinroq
+              </button>
+              <Button
+                size="sm"
+                loading={autoSending}
+                onClick={handleSendAllReminders}
+                className="bg-amber-500 hover:bg-amber-600 text-white border-0"
+              >
+                <Send className="w-4 h-4 mr-1.5" />
+                Barchasiga yuborish
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
@@ -1269,8 +1563,16 @@ const Payments = () => {
               className="pl-10"
             />
           </div>
-          
-          <div className="flex items-center gap-2">
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Oy tanlash */}
+            <input
+              type="month"
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              className="px-3 py-2 border rounded-lg text-sm"
+            />
+
             {/* Guruh filteri */}
             <select
               value={filterGroup}
@@ -1282,7 +1584,7 @@ const Payments = () => {
                 <option key={g.id} value={g.id}>{g.name}</option>
               ))}
             </select>
-            
+
             {/* Status filteri */}
             <select
               value={filterStatus}
@@ -1294,10 +1596,48 @@ const Payments = () => {
               <option value="partial">Qisman</option>
               <option value="pending">Kutilmoqda</option>
               <option value="debtor">Qarzdor</option>
+              <option value="free">Bepul</option>
             </select>
           </div>
         </div>
       </Card>
+
+      {/* Bulk actions toolbar */}
+      {someBulkSelected && isAdmin && (
+        <div className="sticky top-0 z-20 bg-primary-600 text-white rounded-xl px-4 py-3 flex flex-wrap items-center gap-3 shadow-lg">
+          <span className="font-semibold text-sm">{selectedStudentIds.size} ta tanlandi</span>
+          <div className="flex-1" />
+          <button
+            onClick={bulkMarkPaid}
+            disabled={bulkActionLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-green-500 hover:bg-green-600 rounded-lg text-sm font-medium transition"
+          >
+            <CheckCircle className="w-4 h-4" /> To'langan deb belgilash
+          </button>
+          <button
+            onClick={bulkSendReminders}
+            disabled={bulkActionLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-sm font-medium transition"
+          >
+            <Bell className="w-4 h-4" /> Eslatma yuborish
+          </button>
+          <button onClick={clearBulkSelection} className="p-1.5 hover:bg-white/20 rounded-lg">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Barchani tanlash (faqat qarzdorlar bo'lsa) */}
+      {isAdmin && debtorIds.length > 0 && (
+        <div className="flex items-center gap-2 px-1">
+          <button onClick={toggleBulkSelectAll} className="flex items-center gap-2 text-sm text-gray-600 hover:text-primary-600 transition">
+            {allDebtorsSelected
+              ? <CheckSquare className="w-4 h-4 text-primary-600" />
+              : <Square className="w-4 h-4" />}
+            Barcha qarzdorlarni tanlash ({debtorIds.length} ta)
+          </button>
+        </div>
+      )}
 
       {/* O'quvchilar ro'yxati */}
       <div className="space-y-3">
@@ -1306,15 +1646,26 @@ const Payments = () => {
           const group = groups.find(g => g.id === student.groupId);
           const bills = getStudentBills(student.id);
           const isExpanded = expandedStudents[student.id];
+          const isChecked = selectedStudentIds.has(student.id);
 
           return (
-            <Card key={student.id} className="overflow-hidden">
+            <Card key={student.id} className={`overflow-hidden ${isChecked ? 'ring-2 ring-primary-400' : ''}`}>
               {/* Asosiy qator */}
-              <div 
+              <div
                 className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50"
                 onClick={() => toggleStudentExpand(student.id)}
               >
                 <div className="flex items-center gap-4">
+                  {isAdmin && status.debt > 0 && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleBulkSelect(student.id); }}
+                      className="p-1 rounded hover:bg-gray-100 flex-shrink-0"
+                    >
+                      {isChecked
+                        ? <CheckSquare className="w-4 h-4 text-primary-600" />
+                        : <Square className="w-4 h-4 text-gray-400" />}
+                    </button>
+                  )}
                   <Avatar name={student.fullName} size="md" />
                   <div>
                     <h3 className="font-semibold">{student.fullName}</h3>
@@ -1323,6 +1674,9 @@ const Payments = () => {
                 </div>
 
                 <div className="flex items-center gap-4">
+                  {student.isFree && (
+                    <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Bepul</span>
+                  )}
                   {status.debt > 0 && (
                     <div className="text-right">
                       <p className="text-lg font-bold text-red-600">{formatMoney(status.debt)}</p>
@@ -1365,6 +1719,11 @@ const Payments = () => {
                                   -{bill.appliedDiscount}% skidka
                                 </span>
                               )}
+                              {bill.isProrated && (
+                                <span className="ml-2 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
+                                  Kunlik hisob
+                                </span>
+                              )}
                             </div>
                           </div>
                           
@@ -1391,7 +1750,7 @@ const Payments = () => {
                             <div className="w-20 h-2 bg-gray-200 rounded-full overflow-hidden">
                               <div 
                                 className={`h-full ${bill.status === 'paid' ? 'bg-green-500' : 'bg-yellow-500'}`}
-                                style={{ width: `${(bill.paidAmount || 0) / bill.totalAmount * 100}%` }}
+                                style={{ width: `${bill.totalAmount > 0 ? Math.min((bill.paidAmount || 0) / bill.totalAmount * 100, 100) : 0}%` }}
                               />
                             </div>
 
@@ -1716,11 +2075,11 @@ const Payments = () => {
                 <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden">
                   <div 
                     className="h-full bg-green-500 transition-all"
-                    style={{ width: `${(selectedBill.paidAmount || 0) / selectedBill.totalAmount * 100}%` }}
+                    style={{ width: `${selectedBill.totalAmount > 0 ? Math.min((selectedBill.paidAmount || 0) / selectedBill.totalAmount * 100, 100) : 0}%` }}
                   />
                 </div>
                 <p className="text-xs text-center mt-1 text-gray-500">
-                  {Math.round((selectedBill.paidAmount || 0) / selectedBill.totalAmount * 100)}% to'langan
+                  {selectedBill.totalAmount > 0 ? Math.round((selectedBill.paidAmount || 0) / selectedBill.totalAmount * 100) : 0}% to'langan
                 </p>
               </div>
             </div>
@@ -1861,23 +2220,34 @@ const Payments = () => {
               </label>
 
               {/* Telegram */}
-              <label className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${selectedStudent.parentTelegram ? 'hover:bg-gray-50' : 'opacity-50'}`}>
+              {(() => {
+                const hasChatId = !!selectedStudent.parentTelegramChatId;
+                const hasToken = !!settings.telegramBotToken;
+                const canSend = hasChatId && hasToken;
+                return (
+                <label className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${canSend ? 'hover:bg-gray-50' : 'opacity-50'}`}>
                 <input
                   type="checkbox"
                   checked={reminderForm.sendToTelegram}
                   onChange={(e) => setReminderForm({ ...reminderForm, sendToTelegram: e.target.checked })}
-                  disabled={!selectedStudent.parentTelegram}
+                  disabled={!canSend}
                   className="w-5 h-5 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                 />
                 <Send className="w-5 h-5 text-blue-400" />
                 <div className="flex-1">
                   <p className="font-medium">Telegram</p>
                   <p className="text-sm text-gray-500">
-                    {selectedStudent.parentTelegram || "Telegram bog'lanmagan"}
+                    {canSend
+                      ? "Bot orqali to'g'ridan-to'g'ri yuboriladi"
+                      : !hasToken
+                        ? "Bot sozlanmagan (Sozlamalar)"
+                        : "Ota-ona Telegram botga ulanmagan"}
                   </p>
                 </div>
-                {selectedStudent.parentTelegram && <CheckCircle className="w-5 h-5 text-green-500" />}
+                {canSend && <CheckCircle className="w-5 h-5 text-green-500" />}
               </label>
+                );
+              })()}
 
               {/* SMS */}
               <label className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${selectedStudent.parentPhone ? 'hover:bg-gray-50' : 'opacity-50'}`}>

@@ -4,7 +4,8 @@ import {
 } from 'firebase/firestore';
 import { createUserWithEmailAndPassword, getAuth, signOut } from 'firebase/auth';
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { db, getCurrentCenter, getCenterCollection } from './firebase';
+import { db, getCurrentCenter, getCenterCollection, storage } from './firebase';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 // Secondary Firebase instance - faqat bir marta yaratiladi
 let secondaryApp = null;
@@ -601,6 +602,30 @@ export const attendanceAPI = {
       }
     }
     return records;
+  },
+
+  getByStudent: async (studentId) => {
+    try {
+      const q = query(centerCollection('attendance'), where('studentId', '==', studentId));
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err) {
+      console.error('attendance getByStudent error:', err);
+      return [];
+    }
+  },
+
+  getByGroupAndMonth: async (groupId, month) => {
+    try {
+      const q = query(centerCollection('attendance'), where('groupId', '==', groupId));
+      const snapshot = await getDocs(q);
+      return snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() }))
+        .filter(a => a.date && a.date.startsWith(month));
+    } catch (err) {
+      console.error('attendance getByGroupAndMonth error:', err);
+      return [];
+    }
   },
 
   // Davomat saqlash - mavjudlarni yangilash, yo'qlarini yaratish
@@ -1321,5 +1346,43 @@ export const certificatesAPI = {
 
   delete: async (id) => {
     await deleteDoc(centerDoc('certificates', id));
+  },
+
+  // Sertifikat shablonini saqlash (Firestore settings ga)
+  saveTemplate: async (templateDataUrl, textLayout = null) => {
+    const centerId = getCurrentCenter();
+    await setDoc(doc(db, `centers/${centerId}/settings`, 'certificate_template'), {
+      dataUrl: templateDataUrl,
+      ...(textLayout && { textLayout }),
+      updatedAt: serverTimestamp()
+    });
+  },
+
+  // Sertifikat shablonini olish
+  getTemplate: async () => {
+    try {
+      const centerId = getCurrentCenter();
+      const snap = await getDoc(doc(db, `centers/${centerId}/settings`, 'certificate_template'));
+      return snap.exists() ? snap.data() : null;
+    } catch (err) {
+      return null;
+    }
+  },
+
+  // QR orqali ochilganda sertifikatni raqam bilan topish (public)
+  getByNumber: async (certNumber) => {
+    try {
+      const centerId = getCurrentCenter();
+      if (!centerId) return null;
+      const q = query(
+        collection(db, `centers/${centerId}/certificates`),
+        where('certificateNumber', '==', certNumber)
+      );
+      const snap = await getDocs(q);
+      if (snap.empty) return null;
+      return { id: snap.docs[0].id, ...snap.docs[0].data() };
+    } catch (err) {
+      return null;
+    }
   },
 };

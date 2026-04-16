@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
+import { ThemeProvider } from './contexts/ThemeContext';
 
 // Auth
 import Login from './components/auth/Login';
@@ -34,9 +35,12 @@ import Leaderboard from './pages/Leaderboard';
 import Materials from './pages/Materials';
 import RewardsShop from './pages/RewardsShop';
 import Certificates from './pages/Certificates';
+import ActivityLog from './pages/ActivityLog';
+import ParentPortal from './pages/ParentPortal';
 
 function App() {
   return (
+    <ThemeProvider>
     <Router>
       <AuthProvider>
         <Routes>
@@ -53,8 +57,9 @@ function App() {
             <Route path="dashboard" element={<Dashboard />} />
             
             {/* Director only */}
-            <Route path="admins" element={<Admins />} />
-            <Route path="settings" element={<Settings />} />
+            <Route path="admins" element={<ProtectedRoute allowedRoles={['director']}><Admins /></ProtectedRoute>} />
+            <Route path="settings" element={<ProtectedRoute allowedRoles={['director']}><Settings /></ProtectedRoute>} />
+            <Route path="activity-log" element={<ProtectedRoute allowedRoles={['director']}><ActivityLog /></ProtectedRoute>} />
             
             {/* Admin/Director routes */}
             <Route path="students" element={<Students />} />
@@ -82,6 +87,9 @@ function App() {
             <Route path="my-groups" element={<Groups />} />
             <Route path="my-students" element={<Students />} />
             
+            {/* Parent portal */}
+            <Route path="parent" element={<ParentPortal />} />
+
             {/* Student/Parent routes */}
             <Route path="my-progress" element={<Dashboard />} />
             <Route path="my-grades" element={<Grades />} />
@@ -95,6 +103,7 @@ function App() {
         </Routes>
       </AuthProvider>
     </Router>
+    </ThemeProvider>
   );
 }
 

@@ -1,224 +1,303 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Helper functions
+
+    // ==================== HELPER FUNCTIONS ====================
+
     function isAuthenticated() {
       return request.auth != null;
     }
-    
+
     function getUserData() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
-    
+
     function getUserCenterId() {
       return isAuthenticated() ? getUserData().centerId : null;
     }
-    
+
     function getUserRole() {
       return isAuthenticated() ? getUserData().role : null;
     }
-    
+
     function isSuperAdmin() {
       return isAuthenticated() && getUserRole() == 'super_admin';
     }
-    
+
     function isDirector() {
       return isAuthenticated() && getUserRole() == 'director';
     }
-    
+
     function isAdmin() {
       return isAuthenticated() && getUserRole() == 'admin';
     }
-    
-    function isAdminOrDirector() {
-      return isDirector() || isAdmin();
-    }
-    
+
     function isTeacher() {
       return isAuthenticated() && getUserRole() == 'teacher';
     }
-    
+
+    function isStudent() {
+      return isAuthenticated() && getUserRole() == 'student';
+    }
+
+    function isParent() {
+      return isAuthenticated() && getUserRole() == 'parent';
+    }
+
+    // Ota-ona farzandining ID'si orqali tekshirish
+    // users/{uid}.childIds massivida studentId bor bo'lsa — ruxsat
+    function isParentOf(studentId) {
+      return isParent() && getUserData().childIds.hasAny([studentId]);
+    }
+
+    function isAdminOrDirector() {
+      return isDirector() || isAdmin();
+    }
+
+    function isStaff() {
+      return isTeacher() || isAdmin() || isDirector();
+    }
+
+    function isStaffOrParentOf(studentId) {
+      return isStaff() || isParentOf(studentId);
+    }
+
     function belongsToCenter(centerId) {
       return isAuthenticated() && getUserCenterId() == centerId;
     }
-    
-    // ==================== GLOBAL COLLECTIONS ====================
-    
-    // Centers
-    match /centers/{centerId} {
-      allow read: if true;
-      allow create: if true;
-      allow update, delete: if isSuperAdmin() || (belongsToCenter(centerId) && isDirector());
+
+    // O'quvchi faqat o'z ma'lumotini ko'ra oladi (studentId = users kolleksiyasidagi UID)
+    function isOwner(studentId) {
+      return isAuthenticated() && request.auth.uid == studentId;
     }
-    
-    // Users
+
+    // Faqat o'zining profilini o'zgartira oladi (rol maydonidan tashqari)
+    function isUpdatingOwnProfile(odamId) {
+      return isAuthenticated()
+        && request.auth.uid == odamId
+        && !('role' in request.resource.data)      // Rolni o'zgartira olmaydi
+        && !('centerId' in request.resource.data); // centerIdni o'zgartira olmaydi
+    }
+
+    // ==================== GLOBAL COLLECTIONS ====================
+
+    // Centers — faqat autentifikatsiya qilinganlar o'qiydi
+    match /centers/{centerId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated(); // Ro'yxatdan o'tish uchun kerak
+      allow update: if isSuperAdmin() || (belongsToCenter(centerId) && isDirector());
+      allow delete: if isSuperAdmin();
+    }
+
+    // Users — KRITIK: har kim o'z profilini o'qiydi, lekin rolni o'zgartira olmaydi
     match /users/{odamId} {
-      allow read: if true;
-      allow create: if true;
-      allow update: if isSuperAdmin() || isAuthenticated();
+      allow read: if isSuperAdmin()
+        || (isAuthenticated() && request.auth.uid == odamId)
+        || (isAuthenticated() && getUserCenterId() == resource.data.centerId && isStaff());
+      allow create: if isAuthenticated(); // Ro'yxatdan o'tish uchun kerak
+      allow update: if isSuperAdmin()
+        || isUpdatingOwnProfile(odamId)
+        || (isAuthenticated() && isAdminOrDirector() && getUserCenterId() == resource.data.centerId);
       allow delete: if isSuperAdmin() || (isAuthenticated() && isDirector());
     }
-    
-    // Feedback (global)
+
+    // Feedback
     match /feedback/{docId} {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated();
       allow update, delete: if isSuperAdmin() || (isAuthenticated() && isAdminOrDirector());
     }
-    
+
     // ==================== CENTER-SCOPED COLLECTIONS ====================
-    
-    // Center Settings
+
+    // Center Settings — faqat markaz a'zolari o'qiydi
     match /centers/{centerId}/settings/{docId} {
-      allow read: if true;
-      allow create: if true;
-      allow update: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
-      allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isDirector());
-    }
-    
-    // Students - faqat director o'chira oladi
-    match /centers/{centerId}/students/{docId} {
       allow read: if isSuperAdmin() || belongsToCenter(centerId);
       allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isDirector());
     }
-    
-    // Teachers - faqat director o'chira oladi
+
+    // Students
+    match /centers/{centerId}/students/{docId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && isStudent() && resource.data.userId == request.auth.uid)
+        || (belongsToCenter(centerId) && isParentOf(docId));
+      allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
+      allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isDirector());
+    }
+
+    // Teachers
     match /centers/{centerId}/teachers/{docId} {
       allow read: if isSuperAdmin() || belongsToCenter(centerId);
       allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isDirector());
     }
-    
-    // Groups - faqat director o'chira oladi
+
+    // Groups
     match /centers/{centerId}/groups/{docId} {
       allow read: if isSuperAdmin() || belongsToCenter(centerId);
       allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isDirector());
     }
-    
-    // Payments - faqat director o'chira oladi
+
+    // Payments — o'quvchi FAQAT o'zining to'lovlarini ko'radi, ota-ona ham
     match /centers/{centerId}/payments/{docId} {
-      allow read: if isSuperAdmin() || belongsToCenter(centerId);
+      allow read: if isSuperAdmin()
+        || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && resource.data.studentId == request.auth.uid)
+        || (belongsToCenter(centerId) && isParentOf(resource.data.studentId));
       allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isDirector());
     }
-    
-    // Monthly Bills (Oylik hisoblar) - qisman to'lov tizimi
+
+    // Monthly Bills — o'quvchi FAQAT o'zining hisobini ko'radi, ota-ona ham
     match /centers/{centerId}/monthly_bills/{docId} {
-      allow read: if isSuperAdmin() || belongsToCenter(centerId);
+      allow read: if isSuperAdmin()
+        || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && resource.data.studentId == request.auth.uid)
+        || (belongsToCenter(centerId) && isParentOf(resource.data.studentId));
       allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isDirector());
     }
-    
-    // Attendance
+
+    // Attendance — faqat o'qituvchi va admin yoza oladi; ota-ona o'qiydi
     match /centers/{centerId}/attendance/{docId} {
-      allow read: if isSuperAdmin() || belongsToCenter(centerId);
-      allow create, update: if isSuperAdmin() || belongsToCenter(centerId);
+      allow read: if isSuperAdmin()
+        || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && isStudent() && resource.data.studentId == request.auth.uid)
+        || (belongsToCenter(centerId) && isParentOf(resource.data.studentId));
+      allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isStaff());
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
     }
-    
-    // Grades
+
+    // Grades — o'quvchi o'z bahosini ko'radi; ota-ona ham ko'radi
     match /centers/{centerId}/grades/{docId} {
-      allow read: if isSuperAdmin() || belongsToCenter(centerId);
-      allow create, update: if isSuperAdmin() || belongsToCenter(centerId);
+      allow read: if isSuperAdmin()
+        || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && isStudent() && resource.data.studentId == request.auth.uid)
+        || (belongsToCenter(centerId) && isParentOf(resource.data.studentId));
+      allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isStaff());
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
     }
-    
+
     // Messages
     match /centers/{centerId}/messages/{docId} {
       allow read: if isSuperAdmin() || belongsToCenter(centerId);
-      allow create: if isSuperAdmin() || belongsToCenter(centerId);
-      allow update: if isSuperAdmin() || belongsToCenter(centerId); // Barcha a'zolar o'qildi belgilay oladi
+      allow create: if isSuperAdmin() || (belongsToCenter(centerId) && isStaff());
+      allow update: if isSuperAdmin() || belongsToCenter(centerId); // o'qildi belgisi uchun
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
     }
-    
-    // Leads - faqat director o'chira oladi
+
+    // Leads
     match /centers/{centerId}/leads/{docId} {
-      allow read: if isSuperAdmin() || belongsToCenter(centerId);
+      allow read: if isSuperAdmin() || (belongsToCenter(centerId) && isStaff());
       allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isDirector());
     }
-    
+
     // Schedule
     match /centers/{centerId}/schedule/{docId} {
       allow read: if isSuperAdmin() || belongsToCenter(centerId);
       allow create, update, delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
     }
-    
-    // Teacher Ratings
+
+    // Teacher Ratings — o'quvchi baho beradi, admin o'zgartiradi
     match /centers/{centerId}/teacher_ratings/{docId} {
-      allow read: if isSuperAdmin() || belongsToCenter(centerId);
-      allow create: if isSuperAdmin() || belongsToCenter(centerId);
+      allow read: if isSuperAdmin() || (belongsToCenter(centerId) && isStaff());
+      allow create: if isSuperAdmin() || (belongsToCenter(centerId) && isStudent());
       allow update, delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
     }
-    
-    // Homework (Uy vazifalari)
+
+    // Homework — o'qituvchi yaratadi, o'quvchi faqat o'qiydi
     match /centers/{centerId}/homework/{docId} {
       allow read: if isSuperAdmin() || belongsToCenter(centerId);
-      allow create, update: if isSuperAdmin() || belongsToCenter(centerId);
+      allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isStaff());
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
     }
-    
-    // Homework Submissions (Topshiriqlar)
+
+    // Homework Submissions — o'quvchi o'zining topshirig'ini yaratadi/o'zgartiradi; ota-ona ko'radi
     match /centers/{centerId}/homework_submissions/{docId} {
-      allow read: if isSuperAdmin() || belongsToCenter(centerId);
-      allow create, update: if isSuperAdmin() || belongsToCenter(centerId);
+      allow read: if isSuperAdmin()
+        || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && resource.data.studentId == request.auth.uid)
+        || (belongsToCenter(centerId) && isParentOf(resource.data.studentId));
+      allow create: if isSuperAdmin() || (belongsToCenter(centerId) && isStudent());
+      allow update: if isSuperAdmin()
+        || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && isStudent() && resource.data.studentId == request.auth.uid);
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
     }
-    
-    // Chat Messages (Guruh xabarlari)
+
+    // Chat Messages
     match /centers/{centerId}/chat_messages/{docId} {
       allow read: if isSuperAdmin() || belongsToCenter(centerId);
       allow create: if isSuperAdmin() || belongsToCenter(centerId);
-      allow update, delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
+      allow update, delete: if isSuperAdmin()
+        || (belongsToCenter(centerId) && isAdminOrDirector())
+        || (belongsToCenter(centerId) && resource.data.senderId == request.auth.uid);
     }
-    
-    // Chat Read Status (O'qilganlik holati)
+
+    // Chat Read Status
     match /centers/{centerId}/chat_read_status/{docId} {
       allow read, write: if isSuperAdmin() || belongsToCenter(centerId);
     }
-    
-    // Quizzes (Online testlar)
+
+    // Quizzes — o'qituvchi yaratadi, o'quvchi faqat o'qiydi
     match /centers/{centerId}/quizzes/{docId} {
       allow read: if isSuperAdmin() || belongsToCenter(centerId);
-      allow create, update: if isSuperAdmin() || belongsToCenter(centerId);
+      allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isStaff());
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
     }
-    
-    // Quiz Results (Test natijalari)
+
+    // Quiz Results — o'quvchi o'z natijasini ko'radi; ota-ona ham ko'radi
     match /centers/{centerId}/quiz_results/{docId} {
-      allow read: if isSuperAdmin() || belongsToCenter(centerId);
-      allow create, update: if isSuperAdmin() || belongsToCenter(centerId);
+      allow read: if isSuperAdmin()
+        || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && resource.data.studentId == request.auth.uid)
+        || (belongsToCenter(centerId) && isParentOf(resource.data.studentId));
+      allow create: if isSuperAdmin() || (belongsToCenter(centerId) && isStudent());
+      allow update: if isSuperAdmin() || (belongsToCenter(centerId) && isStaff());
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
     }
-    
-    // Materials (Video/PDF materiallar)
+
+    // Materials
     match /centers/{centerId}/materials/{docId} {
       allow read: if isSuperAdmin() || belongsToCenter(centerId);
-      allow create, update: if isSuperAdmin() || belongsToCenter(centerId);
+      allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isStaff());
       allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
     }
-    
-    // Rewards (Sovg'alar)
+
+    // Rewards
     match /centers/{centerId}/rewards/{docId} {
       allow read: if isSuperAdmin() || belongsToCenter(centerId);
       allow create, update, delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
     }
-    
-    // Reward Purchases (Sovg'a sotib olishlar)
+
+    // Reward Purchases
     match /centers/{centerId}/reward_purchases/{docId} {
-      allow read: if isSuperAdmin() || belongsToCenter(centerId);
-      allow create: if isSuperAdmin() || belongsToCenter(centerId);
+      allow read: if isSuperAdmin()
+        || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && resource.data.studentId == request.auth.uid);
+      allow create: if isSuperAdmin() || (belongsToCenter(centerId) && isStudent());
       allow update, delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
     }
-    
-    // Certificates (Sertifikatlar)
+
+    // Certificates — ota-ona ham farzandining sertifikatini ko'radi
     match /centers/{centerId}/certificates/{docId} {
-      allow read: if isSuperAdmin() || belongsToCenter(centerId);
-      allow create, update: if isSuperAdmin() || belongsToCenter(centerId);
-      allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
+      allow read: if isSuperAdmin()
+        || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && resource.data.studentId == request.auth.uid)
+        || (belongsToCenter(centerId) && isParentOf(resource.data.studentId));
+      allow create, update: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
+      allow delete: if isSuperAdmin() || (belongsToCenter(centerId) && isDirector());
+    }
+
+    // Activity Logs — admin/direktor yozadi, faqat direktor o'qiydi
+    match /centers/{centerId}/activityLogs/{docId} {
+      allow read: if isSuperAdmin() || (belongsToCenter(centerId) && isDirector());
+      allow create: if isSuperAdmin() || (belongsToCenter(centerId) && isAdminOrDirector());
+      allow update, delete: if isSuperAdmin();
     }
   }
 }

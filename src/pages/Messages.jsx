@@ -159,7 +159,6 @@ const Messages = () => {
             }
           }
         } catch (err) {
-          console.log('Teacher fetch warning:', err);
         }
       }
     } catch (err) { 

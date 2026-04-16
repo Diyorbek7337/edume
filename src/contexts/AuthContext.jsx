@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useState } from 'react';
-import { signInWithEmailAndPassword, signOut as firebaseSignOut, onAuthStateChanged } from 'firebase/auth';
+import { signInWithEmailAndPassword, signOut as firebaseSignOut, onAuthStateChanged, setPersistence, browserSessionPersistence } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db, setCurrentCenter, getCurrentCenter } from '../services/firebase';
+import { setSentryUser, clearSentryUser } from '../services/sentry';
 
 const AuthContext = createContext(null);
 
@@ -17,29 +18,36 @@ export const AuthProvider = ({ children }) => {
   const [centerData, setCenterData] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const SESSION_DURATION = 8 * 60 * 60 * 1000; // 8 soat
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
+        // Sessiya vaqtini tekshirish
+        const loginTime = sessionStorage.getItem('loginTime');
+        if (!loginTime || Date.now() - parseInt(loginTime) > SESSION_DURATION) {
+          await firebaseSignOut(auth);
+          sessionStorage.removeItem('loginTime');
+          setLoading(false);
+          return;
+        }
+
         setUser(firebaseUser);
         try {
           const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
           if (userDoc.exists()) {
             const data = { id: userDoc.id, ...userDoc.data() };
             setUserData(data);
-            
+            setSentryUser(firebaseUser.uid, data.role, data.centerId);
+
             // Center ma'lumotlarini olish va set qilish
             if (data.centerId) {
-              console.log('Setting centerId:', data.centerId);
               setCurrentCenter(data.centerId);
               const centerDoc = await getDoc(doc(db, 'centers', data.centerId));
               if (centerDoc.exists()) {
                 setCenterData({ id: centerDoc.id, ...centerDoc.data() });
               }
-            } else {
-              console.warn('User has no centerId:', data);
             }
-          } else {
-            console.warn('User document not found for:', firebaseUser.uid);
           }
         } catch (err) {
           console.error('Error fetching user data:', err);
@@ -49,6 +57,7 @@ export const AuthProvider = ({ children }) => {
         setUserData(null);
         setCenterData(null);
         setCurrentCenter(null);
+        clearSentryUser();
       }
       setLoading(false);
     });
@@ -56,7 +65,17 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   const signIn = async (email, password) => {
-    const result = await signInWithEmailAndPassword(auth, email, password);
+    await setPersistence(auth, browserSessionPersistence);
+    // loginTime ni oldin set qilish kerak, chunki onAuthStateChanged
+    // signInWithEmailAndPassword dan darhol ishga tushadi va loginTime null bo'lsa logout qiladi
+    sessionStorage.setItem('loginTime', Date.now().toString());
+    let result;
+    try {
+      result = await signInWithEmailAndPassword(auth, email, password);
+    } catch (err) {
+      sessionStorage.removeItem('loginTime');
+      throw err;
+    }
     const userDoc = await getDoc(doc(db, 'users', result.user.uid));
     if (userDoc.exists()) {
       const data = { id: userDoc.id, ...userDoc.data() };
@@ -64,14 +83,12 @@ export const AuthProvider = ({ children }) => {
       
       // Center set qilish
       if (data.centerId) {
-        console.log('SignIn - Setting centerId:', data.centerId);
         setCurrentCenter(data.centerId);
         const centerDoc = await getDoc(doc(db, 'centers', data.centerId));
         if (centerDoc.exists()) {
           setCenterData({ id: centerDoc.id, ...centerDoc.data() });
         }
       } else {
-        console.warn('SignIn - User has no centerId');
       }
     }
     return result;
@@ -79,6 +96,7 @@ export const AuthProvider = ({ children }) => {
 
   const signOut = async () => {
     await firebaseSignOut(auth);
+    sessionStorage.removeItem('loginTime');
     setUser(null);
     setUserData(null);
     setCenterData(null);

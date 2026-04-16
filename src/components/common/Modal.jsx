@@ -58,7 +58,7 @@ const Modal = ({
       <div
         className={`
           ${sizes[size]}
-          w-full bg-white rounded-2xl shadow-2xl
+          w-full bg-white dark:bg-gray-800 rounded-2xl shadow-2xl
           transform transition-all duration-300
           animate-slide-up
           ${className}
@@ -66,23 +66,23 @@ const Modal = ({
       >
         {/* Header */}
         {(title || showCloseButton) && (
-          <div className="flex items-center justify-between p-6 border-b border-gray-100">
+          <div className="flex items-center justify-between p-6 border-b border-gray-100 dark:border-gray-700">
             {title && (
-              <h2 className="text-xl font-bold text-gray-900 font-display">
+              <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 font-display">
                 {title}
               </h2>
             )}
             {showCloseButton && (
               <button
                 onClick={onClose}
-                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-xl transition-colors"
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
             )}
           </div>
         )}
-        
+
         {/* Content */}
         <div className="p-6">
           {children}
@@ -94,7 +94,7 @@ const Modal = ({
 };
 
 const ModalActions = ({ children, className = '' }) => (
-  <div className={`flex items-center justify-end gap-3 mt-6 pt-4 border-t border-gray-100 ${className}`}>
+  <div className={`flex items-center justify-end gap-3 mt-6 pt-4 border-t border-gray-100 dark:border-gray-700 ${className}`}>
     {children}
   </div>
 );

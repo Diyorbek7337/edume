@@ -1,10 +1,11 @@
 // AI Service - Google Gemini va Groq
 // Test savollarini avtomatik yaratish uchun
+// ESLATMA: API kalitni Google Cloud Console'da domenga cheklang:
+// https://console.cloud.google.com/apis/credentials → API key → Application restrictions → HTTP referrers
 
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
 
-// Qaysi API ishlatilishini aniqlash
 const getActiveProvider = () => {
   if (GROQ_API_KEY && GROQ_API_KEY !== 'your_groq_api_key') return 'groq';
   if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_gemini_api_key') return 'gemini';
@@ -12,29 +13,21 @@ const getActiveProvider = () => {
 };
 
 export const geminiAPI = {
-  /**
-   * Test savollarini yaratish
-   */
   generateQuestions: async (topic, count = 5, difficulty = 'medium', language = 'uz') => {
     const provider = getActiveProvider();
-    
+
     if (!provider) {
-      throw new Error('API key topilmadi. .env faylga VITE_GROQ_API_KEY yoki VITE_GEMINI_API_KEY qo\'shing.');
+      throw new Error("AI API sozlanmagan. .env faylga VITE_GROQ_API_KEY yoki VITE_GEMINI_API_KEY qo'shing.");
     }
 
     const difficultyMap = {
       easy: "oson (boshlang'ich daraja)",
-      medium: "o'rta (o'rta daraja)", 
+      medium: "o'rta (o'rta daraja)",
       hard: "qiyin (yuqori daraja)"
     };
+    const languageMap = { uz: "o'zbek tilida", ru: "rus tilida", en: "ingliz tilida" };
 
-    const languageMap = {
-      uz: "o'zbek tilida",
-      ru: "rus tilida",
-      en: "ingliz tilida"
-    };
-
-    const prompt = `Sen test savollarini yaratuvchi mutaxassisan. 
+    const prompt = `Sen test savollarini yaratuvchi mutaxassisan.
 
 Vazifa: "${topic}" mavzusi bo'yicha ${count} ta test savoli yarat.
 Qiyinlik darajasi: ${difficultyMap[difficulty]}
@@ -64,9 +57,8 @@ Eslatma:
 
     try {
       let text;
-      
+
       if (provider === 'groq') {
-        // Groq API
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
           headers: {
@@ -80,39 +72,35 @@ Eslatma:
             max_tokens: 4096
           })
         });
-
         if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error?.message || 'Groq API xatolik');
+          const err = await response.json();
+          throw new Error(err.error?.message || 'Groq API xatolik');
         }
-
         const data = await response.json();
         text = data.choices?.[0]?.message?.content;
+
       } else {
-        // Gemini API
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
-          })
-        });
-
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
+            })
+          }
+        );
         if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error?.message || 'Gemini API xatolik');
+          const err = await response.json();
+          throw new Error(err.error?.message || 'Gemini API xatolik');
         }
-
         const data = await response.json();
         text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       }
-      
-      if (!text) {
-        throw new Error('Javob bo\'sh qaytdi');
-      }
 
-      // JSON ni parse qilish
+      if (!text) throw new Error("Javob bo'sh qaytdi");
+
       let jsonStr = text.trim();
       if (jsonStr.startsWith('```json')) jsonStr = jsonStr.slice(7);
       if (jsonStr.startsWith('```')) jsonStr = jsonStr.slice(3);
@@ -120,14 +108,15 @@ Eslatma:
       jsonStr = jsonStr.trim();
 
       const questions = JSON.parse(jsonStr);
+      const points = difficulty === 'easy' ? 5 : difficulty === 'hard' ? 15 : 10;
 
-      return questions.map((q, index) => ({
-        id: Date.now() + index,
+      return questions.map((q, i) => ({
+        id: Date.now() + i,
         question: q.question || '',
         type: 'single',
         options: q.options || ['', '', '', ''],
         correctAnswer: typeof q.correctAnswer === 'number' ? q.correctAnswer : 0,
-        points: difficulty === 'easy' ? 5 : difficulty === 'hard' ? 15 : 10
+        points
       }));
 
     } catch (error) {
@@ -136,19 +125,8 @@ Eslatma:
     }
   },
 
-  /**
-   * API key mavjudligini tekshirish
-   */
-  isConfigured: () => {
-    return getActiveProvider() !== null;
-  },
-  
-  /**
-   * Qaysi provider ishlatilayotganini olish
-   */
-  getProvider: () => {
-    return getActiveProvider();
-  }
+  isConfigured: () => getActiveProvider() !== null,
+  getProvider: () => getActiveProvider()
 };
 
 export default geminiAPI;

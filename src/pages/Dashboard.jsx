@@ -1,16 +1,17 @@
 import { useState, useEffect } from 'react';
-import { 
-  Users, GraduationCap, UsersRound, CreditCard, TrendingUp, 
-  Calendar, Award, BarChart3, Clock, CheckCircle, XCircle, Bell, 
-  UserPlus, BookOpen, AlertTriangle, ArrowRight, Percent, Filter
+import {
+  Users, GraduationCap, UsersRound, CreditCard, TrendingUp,
+  Calendar, Award, Clock, CheckCircle, XCircle, Bell,
+  UserPlus, BookOpen, AlertTriangle, ArrowRight, TrendingDown, Filter, Percent, Cake, Gift
 } from 'lucide-react';
 import { Card, Badge, Avatar, Select, Loading, Button } from '../components/common';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
-import { 
-  studentsAPI, teachersAPI, groupsAPI, paymentsAPI, gradesAPI, 
-  attendanceAPI, leadsAPI, settingsAPI 
+import {
+  studentsAPI, teachersAPI, groupsAPI, paymentsAPI, gradesAPI,
+  attendanceAPI, leadsAPI, scheduleAPI, settingsAPI
 } from '../services/api';
+import { getPendingReminders } from '../services/autoReminder';
 import { formatMoney, formatDate, toISODateString } from '../utils/helpers';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
@@ -22,30 +23,47 @@ const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'];
 
 // Admin/Direktor Dashboard
 const AdminDashboard = () => {
-  const [stats, setStats] = useState({ 
+  const [stats, setStats] = useState({
     students: 0, teachers: 0, groups: 0, revenue: 0,
-    newLeads: 0, pendingPayments: 0, activeStudents: 0
+    newLeads: 0, pendingPayments: 0, activeStudents: 0,
+    attendancePresent: 0, attendanceTotal: 0, debtorsCount: 0, revenueGrowth: null
   });
   const [recentStudents, setRecentStudents] = useState([]);
   const [recentPayments, setRecentPayments] = useState([]);
   const [monthlyRevenue, setMonthlyRevenue] = useState([]);
   const [groupStats, setGroupStats] = useState([]);
+  const [todaySchedule, setTodaySchedule] = useState([]);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState('month'); // day, week, month, all
+  const [reminderCount, setReminderCount] = useState(0);
+  const [birthdayStudents, setBirthdayStudents] = useState({ today: [], upcoming: [] });
 
   useEffect(() => {
+    let isMounted = true;
     const fetchStats = async () => {
       try {
-        const [students, teachers, groups, payments, leads] = await Promise.all([
+        const now = new Date();
+        const todayStr = now.toISOString().split('T')[0];
+        const todayDayOfWeek = now.getDay() || 7; // 0(Yak) → 7 (schedule 1-7 formatida)
+        const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const lastMonth = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, '0')}`;
+
+        const [students, teachers, groups, payments, leads, schedule, todayAtt, thisMonthBills, lastMonthBills] = await Promise.all([
           studentsAPI.getAll(),
           teachersAPI.getAll(),
           groupsAPI.getAll(),
           paymentsAPI.getAll(),
-          leadsAPI.getAll()
+          leadsAPI.getAll(),
+          scheduleAPI.getAll(),
+          attendanceAPI.getByDate(todayStr),
+          paymentsAPI.getMonthlyBillsByMonth(currentMonth),
+          paymentsAPI.getMonthlyBillsByMonth(lastMonth),
         ]);
-        
+
+        if (!isMounted) return;
+
         // Period bo'yicha filter
-        const now = new Date();
         const filterByPeriod = (date) => {
           if (!date) return false;
           const d = date?.toDate ? date.toDate() : new Date(date);
@@ -80,6 +98,33 @@ const AdminDashboard = () => {
         // Yangi lidlar
         const newLeadsCount = leads.filter(l => l.status === 'new').length;
 
+        // Bugungi davomad
+        const attPresent = todayAtt.filter(a => a.status === 'present' || a.status === 'late').length;
+        const attTotal = todayAtt.length;
+
+        // Bu oy qarzdorlar (to'lanmagan monthly bill bor o'quvchilar)
+        const debtorIds = new Set(
+          thisMonthBills.filter(b => b.status !== 'paid' && !b.isFree && (b.remainingAmount || 0) > 0).map(b => b.studentId)
+        );
+
+        // O'tgan oy daromadi (taqqoslash uchun)
+        const lastMonthRevenue = payments
+          .filter(p => {
+            if (p.status !== 'paid') return false;
+            const d = p.paidAt?.toDate ? p.paidAt.toDate() : new Date(p.paidAt || p.createdAt);
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` === lastMonth;
+          })
+          .reduce((sum, p) => sum + (p.amount || 0), 0);
+        const revenueGrowth = lastMonthRevenue > 0
+          ? Math.round(((totalRevenue - lastMonthRevenue) / lastMonthRevenue) * 100)
+          : null;
+
+        // Bugungi darslar
+        const todayClasses = schedule
+          .filter(s => s.dayOfWeek === todayDayOfWeek && s.status !== 'cancelled')
+          .sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
+        setTodaySchedule(todayClasses);
+
         setStats({
           students: students.length,
           teachers: teachers.length,
@@ -87,17 +132,53 @@ const AdminDashboard = () => {
           revenue: totalRevenue,
           newLeads: newLeadsCount,
           pendingPayments: pending,
-          activeStudents: students.filter(s => s.status === 'active').length
+          activeStudents: students.filter(s => s.status === 'active').length,
+          attendancePresent: attPresent,
+          attendanceTotal: attTotal,
+          debtorsCount: debtorIds.size,
+          revenueGrowth,
         });
 
         setRecentStudents(students.slice(-5).reverse());
         setRecentPayments(payments.filter(p => p.status === 'paid').slice(-5).reverse());
 
+        // Tug'ilgan kun hisoblash
+        const todayMD = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        const todayBirthdays = [];
+        const upcomingBirthdays = [];
+        students.forEach(s => {
+          if (!s.birthDate && !s.dateOfBirth) return;
+          const raw = s.birthDate || s.dateOfBirth;
+          let bDate;
+          try {
+            bDate = raw?.toDate ? raw.toDate() : new Date(raw);
+            if (isNaN(bDate.getTime())) return;
+          } catch { return; }
+          const bMD = `${String(bDate.getMonth() + 1).padStart(2, '0')}-${String(bDate.getDate()).padStart(2, '0')}`;
+          if (bMD === todayMD) {
+            todayBirthdays.push({ ...s, age: now.getFullYear() - bDate.getFullYear() });
+          } else {
+            // Next 7 days
+            for (let di = 1; di <= 7; di++) {
+              const d = new Date(now);
+              d.setDate(now.getDate() + di);
+              const dMD = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+              if (bMD === dMD) {
+                upcomingBirthdays.push({ ...s, daysLeft: di, age: d.getFullYear() - bDate.getFullYear() });
+                break;
+              }
+            }
+          }
+        });
+        upcomingBirthdays.sort((a, b) => a.daysLeft - b.daysLeft);
+        if (isMounted) setBirthdayStudents({ today: todayBirthdays, upcoming: upcomingBirthdays });
+
         // Guruhlar statistikasi - haqiqiy o'quvchilar soni
-        const gStats = await Promise.all(groups.map(async (g) => {
-          const groupStudents = await studentsAPI.getByGroup(g.id);
-          return { name: g.name, students: groupStudents.length };
+        const gStats = groups.map(g => ({
+          name: g.name,
+          students: students.filter(s => s.groupId === g.id && s.status !== 'graduated').length,
         }));
+        if (!isMounted) return;
         setGroupStats(gStats);
 
         // Oylik daromad grafigi
@@ -119,10 +200,22 @@ const AdminDashboard = () => {
         }
         setMonthlyRevenue(revenueByMonth);
 
-      } catch (err) { console.error(err); }
-      finally { setLoading(false); }
+        // Pending reminders hisoblash (bir marta, period o'zgarganda emas)
+        if (isMounted) {
+          try {
+            const cfg = await settingsAPI.get();
+            const bills = await paymentsAPI.getMonthlyBills();
+            const active = students.filter(s => s.status === 'active');
+            const pending = getPendingReminders(active, bills || [], cfg || {});
+            if (isMounted) setReminderCount(pending.length);
+          } catch { /* silent */ }
+        }
+
+      } catch (err) { if (isMounted) console.error(err); }
+      finally { if (isMounted) setLoading(false); }
     };
     fetchStats();
+    return () => { isMounted = false; };
   }, [period]);
 
   if (loading) return <Loading text="Yuklanmoqda..." />;
@@ -131,6 +224,70 @@ const AdminDashboard = () => {
 
   return (
     <div className="space-y-6 animate-fade-in">
+
+      {/* Reminder notification banner */}
+      {reminderCount > 0 && (
+        <Link
+          to="/payments"
+          className="flex items-center gap-3 bg-amber-50 border border-amber-300 rounded-xl px-4 py-3 hover:bg-amber-100 transition-colors group"
+        >
+          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center">
+            <Bell className="w-4 h-4 text-amber-600" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-amber-900">
+              {reminderCount} ta o'quvchiga to'lov eslatmasi yuborilmagan
+            </p>
+            <p className="text-xs text-amber-700">To'lovlar sahifasiga o'ting va barchasiga bir bosish bilan yuboring</p>
+          </div>
+          <ArrowRight className="w-4 h-4 text-amber-500 group-hover:translate-x-1 transition-transform" />
+        </Link>
+      )}
+
+      {/* Bugungi tug'ilgan kunlar */}
+      {birthdayStudents.today.length > 0 && (
+        <div className="bg-pink-50 dark:bg-pink-900/20 border border-pink-300 dark:border-pink-700 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-pink-100 dark:bg-pink-800 flex items-center justify-center">
+              <Cake className="w-4 h-4 text-pink-600 dark:text-pink-300" />
+            </div>
+            <p className="text-sm font-semibold text-pink-900 dark:text-pink-200">
+              Bugun tug'ilgan kun! 🎂
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 ml-11">
+            {birthdayStudents.today.map(s => (
+              <span key={s.id} className="inline-flex items-center gap-1 px-3 py-1 bg-pink-100 dark:bg-pink-800/40 text-pink-800 dark:text-pink-200 rounded-full text-sm font-medium">
+                <Gift className="w-3 h-3" />
+                {s.fullName} ({s.age} yosh)
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Kelasi hafta tug'ilgan kunlar */}
+      {birthdayStudents.upcoming.length > 0 && (
+        <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-700 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-purple-100 dark:bg-purple-800 flex items-center justify-center">
+              <Cake className="w-4 h-4 text-purple-600 dark:text-purple-300" />
+            </div>
+            <p className="text-sm font-semibold text-purple-900 dark:text-purple-200">
+              Kelasi 7 kun ichida tug'ilgan kunlar
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 ml-11">
+            {birthdayStudents.upcoming.map(s => (
+              <span key={s.id} className="inline-flex items-center gap-1 px-3 py-1 bg-purple-100 dark:bg-purple-800/40 text-purple-800 dark:text-purple-200 rounded-full text-sm">
+                {s.fullName}
+                <span className="text-xs opacity-70">({s.daysLeft} kun)</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Bosh sahifa</h1>
@@ -204,6 +361,61 @@ const AdminDashboard = () => {
         </Card>
       </div>
 
+      {/* Ikkinchi qator stat kartalar */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <Card padding="p-5" className="bg-gradient-to-br from-teal-50 to-teal-100 border-teal-200">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-teal-600 font-medium">Bugungi davomad</p>
+              <p className="text-3xl font-bold text-teal-700">
+                {stats.attendanceTotal > 0
+                  ? `${Math.round((stats.attendancePresent / stats.attendanceTotal) * 100)}%`
+                  : '—'}
+              </p>
+              <p className="text-xs text-teal-500 mt-1">
+                {stats.attendancePresent}/{stats.attendanceTotal} o'quvchi
+              </p>
+            </div>
+            <div className="w-14 h-14 bg-teal-500 rounded-2xl flex items-center justify-center shadow-lg shadow-teal-200">
+              <CheckCircle className="w-7 h-7 text-white" />
+            </div>
+          </div>
+        </Card>
+
+        <Card padding="p-5" className="bg-gradient-to-br from-red-50 to-red-100 border-red-200">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-red-600 font-medium">Bu oy qarzdorlar</p>
+              <p className="text-3xl font-bold text-red-700">{stats.debtorsCount}</p>
+              <p className="text-xs text-red-500 mt-1">to'lov qilmagan</p>
+            </div>
+            <div className="w-14 h-14 bg-red-500 rounded-2xl flex items-center justify-center shadow-lg shadow-red-200">
+              <AlertTriangle className="w-7 h-7 text-white" />
+            </div>
+          </div>
+        </Card>
+
+        <Card padding="p-5" className="bg-gradient-to-br from-purple-50 to-purple-100 border-purple-200 col-span-2 md:col-span-1">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-purple-600 font-medium">Bu oy daromad</p>
+              <p className="text-xl font-bold text-purple-700">{formatMoney(stats.revenue)}</p>
+              {stats.revenueGrowth !== null && (
+                <p className={`text-xs mt-1 flex items-center gap-1 ${stats.revenueGrowth >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {stats.revenueGrowth >= 0
+                    ? <TrendingUp className="w-3 h-3" />
+                    : <TrendingDown className="w-3 h-3" />}
+                  {stats.revenueGrowth >= 0 ? '+' : ''}{stats.revenueGrowth}% o'tgan oyga nisbatan
+                </p>
+              )}
+            </div>
+            <div className="w-14 h-14 bg-purple-500 rounded-2xl flex items-center justify-center shadow-lg shadow-purple-200">
+              <CreditCard className="w-7 h-7 text-white" />
+            </div>
+          </div>
+        </Card>
+      </div>
+
       {/* Qarzdorlik ogohlantirishi */}
       {stats.pendingPayments > 0 && (
         <Card padding="p-4" className="bg-red-50 border-red-200">
@@ -263,7 +475,7 @@ const AdminDashboard = () => {
                     outerRadius={80}
                     label={({ name, students }) => `${name}: ${students}`}
                   >
-                    {groupStats.map((entry, index) => (
+                    {groupStats.map((_entry, index) => (
                       <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                     ))}
                   </Pie>
@@ -330,6 +542,34 @@ const AdminDashboard = () => {
         </Card>
       </div>
 
+      {/* Bugungi darslar */}
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold flex items-center gap-2">
+            <Calendar className="w-5 h-5 text-primary-600" /> Bugungi darslar
+          </h3>
+          <Link to="/schedule" className="text-primary-600 text-sm hover:underline">Jadval</Link>
+        </div>
+        {todaySchedule.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {todaySchedule.map(cls => (
+              <div key={cls.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border hover:border-primary-300 transition">
+                <div className="w-10 h-10 bg-primary-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                  <Clock className="w-5 h-5 text-primary-600" />
+                </div>
+                <div className="min-w-0">
+                  <p className="font-medium text-sm truncate">{cls.groupName}</p>
+                  <p className="text-xs text-gray-500">{cls.startTime}–{cls.endTime} {cls.room ? `• ${cls.room}` : ''}</p>
+                  <p className="text-xs text-gray-400 truncate">{cls.teacherName}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-center text-gray-400 py-6">Bugun dars yo'q</p>
+        )}
+      </Card>
+
       {/* Tezkor havolalar */}
       <Card>
         <h3 className="text-lg font-semibold mb-4">Tezkor amallar</h3>
@@ -370,7 +610,6 @@ const TeacherDashboard = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        console.log('TeacherDashboard - userData:', userData);
         
         const allTeachers = await teachersAPI.getAll();
         const teacher = allTeachers.find(t => 
@@ -379,7 +618,6 @@ const TeacherDashboard = () => {
           t.phone === userData?.phone ||
           t.phone?.replace(/\D/g, '') === userData?.phone?.replace(/\D/g, '')
         );
-        console.log('Found teacher:', teacher);
         
         let allGroupsData = await groupsAPI.getAll();
         let groupsData = [];
@@ -392,7 +630,6 @@ const TeacherDashboard = () => {
           index === self.findIndex(t => t.id === g.id)
         );
         
-        console.log('Teacher groups:', uniqueGroups);
         
         let studentCount = 0;
         let allAtt = [];
@@ -410,7 +647,6 @@ const TeacherDashboard = () => {
         setGroups(groupsWithCounts);
         setTotalStudents(studentCount);
         setAllAttendance(allAtt);
-        console.log('All attendance loaded:', allAtt.length);
         
       } catch (err) { console.error('TeacherDashboard error:', err); }
       finally { setLoading(false); }
@@ -451,7 +687,6 @@ const TeacherDashboard = () => {
     const absent = filteredAttendance.filter(a => a.status === 'absent').length;
     const late = filteredAttendance.filter(a => a.status === 'late').length;
     
-    console.log('TeacherDashboard - Period:', period, 'Filtered:', filteredAttendance.length, { present, absent, late });
     setTodayAttendance({ present, absent, late });
   }, [period, allAttendance, loading]);
 
@@ -577,8 +812,6 @@ const StudentDashboard = ({ isParent = false }) => {
     const fetchStudentData = async () => {
       try {
         const students = await studentsAPI.getAll();
-        console.log('All students:', students);
-        console.log('Current userData:', userData);
         
         let student;
         
@@ -601,7 +834,6 @@ const StudentDashboard = ({ isParent = false }) => {
             );
           });
           
-          console.log('Found children:', myChildren);
           setChildren(myChildren);
           
           if (myChildren.length > 0) {
@@ -623,21 +855,18 @@ const StudentDashboard = ({ isParent = false }) => {
           });
         }
         
-        console.log('Found student:', student);
         
         if (student) {
           setStudentData(student);
           
           // O'quvchi guruhlarini topish
           const allGroups = await groupsAPI.getAll();
-          console.log('All groups:', allGroups);
           
           // groupId yoki studentIds orqali
           const studentGroups = allGroups.filter(g => 
             g.id === student.groupId || 
             g.studentIds?.includes(student.id)
           );
-          console.log('Student groups:', studentGroups);
           
           setGroups(studentGroups);
           
@@ -666,16 +895,11 @@ const StudentDashboard = ({ isParent = false }) => {
           attendanceAPI.getByGroup(selectedGroupId)
         ]);
         
-        console.log('Raw gradesData:', gradesData);
-        console.log('Raw attendanceData:', attendanceData);
-        console.log('StudentData ID:', studentData.id);
         
         // Faqat bu o'quvchining ma'lumotlari
         const myGrades = gradesData.filter(g => g.studentId === studentData.id);
         const myAttendance = attendanceData.filter(a => a.studentId === studentData.id);
         
-        console.log('Filtered myGrades:', myGrades);
-        console.log('Filtered myAttendance:', myAttendance);
         
         // Period bo'yicha filter
         const now = new Date();
@@ -686,7 +910,6 @@ const StudentDashboard = ({ isParent = false }) => {
           
           const dateStr = toISODateString(dateValue);
           if (!dateStr) {
-            console.log('Could not convert date:', dateValue);
             return false;
           }
           
@@ -708,7 +931,6 @@ const StudentDashboard = ({ isParent = false }) => {
         const filteredGrades = myGrades.filter(g => filterByPeriod(g.date || g.createdAt));
         const filteredAttendance = myAttendance.filter(a => filterByPeriod(a.date));
         
-        console.log('StudentDashboard - Period:', period, 'Total:', myAttendance.length, 'Filtered:', filteredAttendance.length);
         
         setGrades(filteredGrades);
         setAttendance(filteredAttendance);
@@ -745,8 +967,8 @@ const StudentDashboard = ({ isParent = false }) => {
 
   const gradeStats = {
     total: grades.length,
-    average: grades.length > 0 
-      ? Math.round(grades.reduce((sum, g) => sum + ((g.grade / g.maxGrade) * 100), 0) / grades.length) 
+    average: grades.length > 0
+      ? Math.round(grades.reduce((sum, g) => sum + (g.maxGrade > 0 ? (g.grade / g.maxGrade) * 100 : 0), 0) / grades.length)
       : 0
   };
 
@@ -826,12 +1048,12 @@ const StudentDashboard = ({ isParent = false }) => {
               Iltimos, to'lovni amalga oshiring.
             </p>
           </div>
-          <Link to="/payments" className="px-4 py-2 bg-red-500 text-white rounded-lg text-sm font-medium hover:bg-red-600">
+          <Link to="/my-payments" className="px-4 py-2 bg-red-500 text-white rounded-lg text-sm font-medium hover:bg-red-600">
             To'lash
           </Link>
         </div>
       )}
-      
+
       {!hasPaidThisMonth && totalDebt === 0 && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 flex items-center gap-3">
           <div className="w-10 h-10 bg-yellow-500 rounded-full flex items-center justify-center flex-shrink-0">
@@ -843,7 +1065,7 @@ const StudentDashboard = ({ isParent = false }) => {
               {new Date().toLocaleDateString('uz-UZ', { month: 'long', year: 'numeric' })} oyi uchun to'lov kutilmoqda.
             </p>
           </div>
-          <Link to="/payments" className="px-4 py-2 bg-yellow-500 text-white rounded-lg text-sm font-medium hover:bg-yellow-600">
+          <Link to="/my-payments" className="px-4 py-2 bg-yellow-500 text-white rounded-lg text-sm font-medium hover:bg-yellow-600">
             To'lash
           </Link>
         </div>
@@ -903,12 +1125,12 @@ const StudentDashboard = ({ isParent = false }) => {
             <h3 className="text-lg font-semibold flex items-center gap-2">
               <Award className="w-5 h-5 text-primary-600" /> Oxirgi baholar
             </h3>
-            <Link to="/grades" className="text-primary-600 text-sm hover:underline">Barchasi</Link>
+            <Link to="/my-grades" className="text-primary-600 text-sm hover:underline">Barchasi</Link>
           </div>
           {grades.length > 0 ? (
             <div className="space-y-3">
               {grades.slice(-5).reverse().map(grade => {
-                const percent = Math.round((grade.grade / grade.maxGrade) * 100);
+                const percent = grade.maxGrade > 0 ? Math.round((grade.grade / grade.maxGrade) * 100) : 0;
                 return (
                   <div key={grade.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                     <div>
@@ -937,7 +1159,7 @@ const StudentDashboard = ({ isParent = false }) => {
             <h3 className="text-lg font-semibold flex items-center gap-2">
               <Calendar className="w-5 h-5 text-primary-600" /> Davomat ({periodLabels[period]})
             </h3>
-            <Link to="/attendance" className="text-primary-600 text-sm hover:underline">Barchasi</Link>
+            <Link to="/my-attendance" className="text-primary-600 text-sm hover:underline">Barchasi</Link>
           </div>
           <div className="grid grid-cols-3 gap-4">
             <div className="p-4 bg-green-50 rounded-xl text-center">
@@ -959,19 +1181,19 @@ const StudentDashboard = ({ isParent = false }) => {
         </Card>
       </div>
 
-      {/* Tezkor havolalar */}
-      <Card>
+      {/* Tezkor havolalar — faqat desktop (mobileda MobileNav orqali) */}
+      <Card className="hidden md:block">
         <h3 className="text-lg font-semibold mb-4">Tezkor havolalar</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Link to="/grades" className="p-4 bg-blue-50 rounded-xl text-center hover:bg-blue-100 transition">
+          <Link to="/my-grades" className="p-4 bg-blue-50 rounded-xl text-center hover:bg-blue-100 transition">
             <Award className="w-8 h-8 text-blue-600 mx-auto mb-2" />
             <p className="font-medium text-blue-700">Baholarim</p>
           </Link>
-          <Link to="/attendance" className="p-4 bg-green-50 rounded-xl text-center hover:bg-green-100 transition">
+          <Link to="/my-attendance" className="p-4 bg-green-50 rounded-xl text-center hover:bg-green-100 transition">
             <Calendar className="w-8 h-8 text-green-600 mx-auto mb-2" />
             <p className="font-medium text-green-700">Davomatim</p>
           </Link>
-          <Link to="/payments" className="p-4 bg-purple-50 rounded-xl text-center hover:bg-purple-100 transition">
+          <Link to="/my-payments" className="p-4 bg-purple-50 rounded-xl text-center hover:bg-purple-100 transition">
             <CreditCard className="w-8 h-8 text-purple-600 mx-auto mb-2" />
             <p className="font-medium text-purple-700">To'lovlarim</p>
           </Link>

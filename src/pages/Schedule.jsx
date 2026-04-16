@@ -4,7 +4,7 @@ import {
   BookOpen, GraduationCap
 } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Modal, Loading, EmptyState } from '../components/common';
-import { scheduleAPI, groupsAPI, teachersAPI } from '../services/api';
+import { scheduleAPI, groupsAPI, teachersAPI, studentsAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
 import { toast } from 'react-toastify';
@@ -48,6 +48,7 @@ const Schedule = () => {
 
   const isAdmin = role === ROLES.ADMIN || role === ROLES.DIRECTOR;
   const isTeacher = role === ROLES.TEACHER;
+  const isStudentOrParent = role === ROLES.STUDENT || role === ROLES.PARENT;
 
   useEffect(() => { fetchData(); }, []);
 
@@ -66,9 +67,48 @@ const Schedule = () => {
         groupsAPI.getAll(),
         teachersAPI.getAll()
       ]);
-      setSchedule(scheduleData);
-      setGroups(groupsData);
-      setTeachers(teachersData);
+
+      // O'quvchi/ota-ona uchun faqat o'z guruh darslarini ko'rsatish
+      if (role === ROLES.STUDENT || role === ROLES.PARENT) {
+        const students = await studentsAPI.getAll();
+        const normalizePhone = (p) => p?.replace(/\D/g, '') || '';
+        const userPhone = normalizePhone(userData?.phone);
+        const userEmail = userData?.email?.toLowerCase();
+
+        let myStudent = null;
+        if (role === ROLES.STUDENT) {
+          myStudent = students.find(s => {
+            const sp = normalizePhone(s.phone);
+            return s.email?.toLowerCase() === userEmail || s.phone === userData?.phone || sp === userPhone;
+          });
+        } else {
+          // parent: find first child
+          const childIds = userData?.childIds || (userData?.childId ? [userData.childId] : []);
+          const myChildren = students.filter(s => {
+            const pp = normalizePhone(s.parentPhone);
+            return s.parentPhone === userData?.phone || (userPhone && pp === userPhone) || childIds.includes(s.id);
+          });
+          myStudent = myChildren[0] || null;
+        }
+
+        if (myStudent) {
+          const myGroupIds = new Set(
+            groupsData.filter(g => g.id === myStudent.groupId || g.studentIds?.includes(myStudent.id)).map(g => g.id)
+          );
+          const filteredSchedule = scheduleData.filter(s => myGroupIds.has(s.groupId));
+          const myGroups = groupsData.filter(g => myGroupIds.has(g.id));
+          setSchedule(filteredSchedule);
+          setGroups(myGroups);
+        } else {
+          setSchedule([]);
+          setGroups([]);
+        }
+        setTeachers(teachersData);
+      } else {
+        setSchedule(scheduleData);
+        setGroups(groupsData);
+        setTeachers(teachersData);
+      }
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   };
@@ -220,8 +260,10 @@ const Schedule = () => {
     <div className="space-y-6 animate-fade-in">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Dars jadvali</h1>
-          <p className="text-gray-500">Haftalik dars jadvali</p>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Dars jadvali</h1>
+          <p className="text-gray-500 dark:text-gray-400">
+            {isStudentOrParent ? 'Mening dars jadvalim' : 'Haftalik dars jadvali'}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           {isAdmin && (
@@ -253,27 +295,31 @@ const Schedule = () => {
           </div>
           
           <div className="flex items-center gap-2 flex-wrap">
-            <select
-              value={filterGroup}
-              onChange={(e) => setFilterGroup(e.target.value)}
-              className="px-3 py-2 border rounded-lg text-sm"
-            >
-              <option value="">Barcha guruhlar</option>
-              {groups.map(g => (
-                <option key={g.id} value={g.id}>{g.name}</option>
-              ))}
-            </select>
-            <select
-              value={filterTeacher}
-              onChange={(e) => setFilterTeacher(e.target.value)}
-              className="px-3 py-2 border rounded-lg text-sm"
-            >
-              <option value="">Barcha o'qituvchilar</option>
-              {teachers.map(t => (
-                <option key={t.id} value={t.id}>{t.fullName}</option>
-              ))}
-            </select>
-            <div className="flex border rounded-lg overflow-hidden">
+            {!isStudentOrParent && (
+              <>
+                <select
+                  value={filterGroup}
+                  onChange={(e) => setFilterGroup(e.target.value)}
+                  className="px-3 py-2 border rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100"
+                >
+                  <option value="">Barcha guruhlar</option>
+                  {groups.map(g => (
+                    <option key={g.id} value={g.id}>{g.name}</option>
+                  ))}
+                </select>
+                <select
+                  value={filterTeacher}
+                  onChange={(e) => setFilterTeacher(e.target.value)}
+                  className="px-3 py-2 border rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100"
+                >
+                  <option value="">Barcha o'qituvchilar</option>
+                  {teachers.map(t => (
+                    <option key={t.id} value={t.id}>{t.fullName}</option>
+                  ))}
+                </select>
+              </>
+            )}
+            <div className="flex border rounded-lg overflow-hidden dark:border-gray-600">
               <button 
                 onClick={() => setViewMode('week')}
                 className={`px-3 py-2 text-sm ${viewMode === 'week' ? 'bg-primary-100 text-primary-700' : ''}`}

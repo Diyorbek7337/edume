@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Search, Plus, Edit, Trash2, Users, Clock, Calendar, ArrowLeft, TrendingUp, TrendingDown, Award, AlertTriangle } from 'lucide-react';
+import { Search, Plus, Edit, Trash2, Users, Clock, Calendar, ArrowLeft, TrendingUp, TrendingDown, Award, AlertTriangle, GraduationCap, Archive } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Avatar, Table, Modal, Loading, EmptyState } from '../components/common';
 import { groupsAPI, teachersAPI, studentsAPI, gradesAPI, attendanceAPI, scheduleAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { activityLogAPI, LOG_ACTIONS } from '../services/activityLog';
 import { ROLES } from '../utils/constants';
 import { formatMoney } from '../utils/helpers';
 import { checkLimit, SUBSCRIPTION_PLANS } from '../utils/subscriptions';
@@ -18,8 +19,10 @@ const Groups = () => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showGraduateModal, setShowGraduateModal] = useState(false);
   const [showLimitModal, setShowLimitModal] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState(null);
+  const [filterStatus, setFilterStatus] = useState('active'); // 'active' | 'graduated' | 'all'
   
   // Group Details View
   const [viewingGroup, setViewingGroup] = useState(null);
@@ -114,7 +117,14 @@ const Groups = () => {
     finally { setLoading(false); }
   };
 
-  const filteredGroups = groups.filter(g => g.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+  const filteredGroups = groups.filter(g => {
+    const matchesSearch = g.name?.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesStatus =
+      filterStatus === 'all' ? true :
+      filterStatus === 'graduated' ? g.status === 'graduated' :
+      g.status !== 'graduated'; // 'active' — graduated bo'lmaganlar
+    return matchesSearch && matchesStatus;
+  });
 
   const resetForm = () => setFormData({ 
     name: '', 
@@ -146,15 +156,20 @@ const Groups = () => {
     }
   };
 
-  // O'quvchi statistikasi hisoblash
+  // O'quvchi statistikasi — to'plangan ball (o'rtacha foiz emas)
   const getStudentStats = (studentId) => {
-    const studentGrades = groupGrades.filter(g => g.studentId === studentId);
-    if (studentGrades.length === 0) return { average: 0, count: 0 };
-    
-    const total = studentGrades.reduce((sum, g) => sum + ((g.grade / g.maxGrade) * 100), 0);
+    const sg = groupGrades.filter(g => g.studentId === studentId);
+    if (sg.length === 0) return { totalPoints: 0, count: 0 };
+
+    const qaCorrect = sg.filter(g => g.type === 'qa' || g.maxGrade === 1)
+                        .reduce((sum, g) => sum + (g.grade || 0), 0);
+    const practicalSum = sg.filter(g => g.type === 'practical' || (g.maxGrade > 1 && g.maxGrade <= 10))
+                           .reduce((sum, g) => sum + (g.grade || 0), 0);
+    const legacySum = sg.filter(g => !g.type && g.maxGrade > 10)
+                        .reduce((sum, g) => sum + Math.round((g.grade / g.maxGrade) * 10), 0);
     return {
-      average: Math.round(total / studentGrades.length),
-      count: studentGrades.length
+      totalPoints: qaCorrect + practicalSum + legacySum,
+      count: sg.length
     };
   };
 
@@ -165,11 +180,11 @@ const Groups = () => {
       stats: getStudentStats(s.id)
     })).filter(s => s.stats.count > 0);
 
-    const sorted = studentsWithStats.sort((a, b) => b.stats.average - a.stats.average);
-    
+    const sorted = studentsWithStats.sort((a, b) => b.stats.totalPoints - a.stats.totalPoints);
+
     return {
       top: sorted.slice(0, 3),
-      bottom: sorted.slice(-3).reverse().filter(s => s.stats.average < 70)
+      bottom: sorted.slice(-3).reverse().filter(s => s.stats.totalPoints < 5)
     };
   };
 
@@ -226,7 +241,15 @@ const Groups = () => {
       setGroups([newGroup, ...groups]);
       setShowAddModal(false);
       resetForm();
-    } catch (err) { 
+
+      activityLogAPI.log({
+        action: LOG_ACTIONS.GROUP_ADDED.key,
+        entityType: 'group',
+        entityName: formData.name,
+        details: { teacherName: teachers.find(t => t.id === formData.teacherId)?.fullName || '' },
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
+    } catch (err) {
       console.error(err);
       alert("Xatolik yuz berdi: " + err.message); 
     }
@@ -284,7 +307,6 @@ const Groups = () => {
           });
         }
       } catch (scheduleErr) {
-        console.log('Schedule update warning:', scheduleErr);
       }
       
       setGroups(groups.map(g => g.id === selectedGroup.id ? {
@@ -296,11 +318,18 @@ const Groups = () => {
         price: Number(formData.price),
         maxStudents: Number(formData.maxStudents)
       } : g));
+      activityLogAPI.log({
+        action: LOG_ACTIONS.GROUP_UPDATED.key,
+        entityType: 'group',
+        entityName: formData.name,
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
+
       setShowEditModal(false);
       resetForm();
-    } catch (err) { 
+    } catch (err) {
       console.error(err);
-      alert("Xatolik yuz berdi"); 
+      alert("Xatolik yuz berdi");
     }
     finally { setFormLoading(false); }
   };
@@ -311,8 +340,36 @@ const Groups = () => {
       await groupsAPI.delete(selectedGroup.id);
       setGroups(groups.filter(g => g.id !== selectedGroup.id));
       setShowDeleteModal(false);
+
+      activityLogAPI.log({
+        action: LOG_ACTIONS.GROUP_DELETED.key,
+        entityType: 'group',
+        entityName: selectedGroup.name,
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
     } catch (err) { alert("O'chirishda xatolik"); }
     finally { setFormLoading(false); }
+  };
+
+  const handleGraduate = async () => {
+    setFormLoading(true);
+    try {
+      await groupsAPI.update(selectedGroup.id, {
+        status: 'graduated',
+        graduatedAt: new Date().toISOString()
+      });
+      setGroups(groups.map(g => g.id === selectedGroup.id
+        ? { ...g, status: 'graduated', graduatedAt: new Date().toISOString() }
+        : g
+      ));
+      setShowGraduateModal(false);
+      // Switch to active filter so graduated group disappears from view
+      if (filterStatus === 'active') setFilterStatus('active');
+    } catch (err) {
+      alert("Bitirish amalga oshmadi: " + err.message);
+    } finally {
+      setFormLoading(false);
+    }
   };
 
   const openEditModal = (group, e) => {
@@ -428,14 +485,14 @@ const Groups = () => {
                             </Table.Cell>
                             <Table.Cell>{student.phone}</Table.Cell>
                             <Table.Cell>
-                              <span className={`font-bold ${stats.average >= 80 ? 'text-green-600' : stats.average >= 60 ? 'text-yellow-600' : 'text-red-600'}`}>
-                                {stats.count > 0 ? `${stats.average}%` : '-'}
+                              <span className={`font-bold ${stats.totalPoints >= 20 ? 'text-green-600' : stats.totalPoints >= 8 ? 'text-yellow-600' : 'text-red-600'}`}>
+                                {stats.count > 0 ? `${stats.totalPoints} b` : '-'}
                               </span>
                             </Table.Cell>
                             <Table.Cell>
-                              {stats.average >= 80 ? (
+                              {stats.totalPoints >= 20 ? (
                                 <Badge variant="success">A'lochi</Badge>
-                              ) : stats.average >= 60 ? (
+                              ) : stats.totalPoints >= 8 ? (
                                 <Badge variant="warning">O'rta</Badge>
                               ) : stats.count > 0 ? (
                                 <Badge variant="danger">Past</Badge>
@@ -469,7 +526,7 @@ const Groups = () => {
                           <Avatar name={student.fullName} size="sm" />
                           <div className="flex-1">
                             <p className="font-medium text-sm">{student.fullName}</p>
-                            <p className="text-xs text-gray-500">{student.stats.average}%</p>
+                            <p className="text-xs text-gray-500">{student.stats.totalPoints} ball</p>
                           </div>
                         </div>
                       ))}
@@ -490,7 +547,7 @@ const Groups = () => {
                           <Avatar name={student.fullName} size="sm" />
                           <div className="flex-1">
                             <p className="font-medium text-sm">{student.fullName}</p>
-                            <p className="text-xs text-red-600">{student.stats.average}%</p>
+                            <p className="text-xs text-red-600">{student.stats.totalPoints} ball</p>
                           </div>
                         </div>
                       ))}
@@ -551,9 +608,30 @@ const Groups = () => {
       </div>
 
       <Card padding="p-4">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-          <input type="text" placeholder="Guruh nomi bo'yicha qidirish..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500" />
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+            <input type="text" placeholder="Guruh nomi bo'yicha qidirish..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500" />
+          </div>
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+            {[
+              { key: 'active', label: 'Faol' },
+              { key: 'graduated', label: 'Bitirgan' },
+              { key: 'all', label: 'Barchasi' },
+            ].map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => setFilterStatus(key)}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+                  filterStatus === key
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </Card>
 
@@ -567,9 +645,13 @@ const Groups = () => {
             >
               <div className="flex items-start justify-between mb-3">
                 <h3 className="font-semibold text-gray-900">{group.name}</h3>
-                <Badge variant={group.studentsCount >= group.maxStudents ? 'warning' : 'success'}>
-                  {group.studentsCount >= group.maxStudents ? "To'lgan" : 'Faol'}
-                </Badge>
+                {group.status === 'graduated' ? (
+                  <Badge variant="info">Bitirgan</Badge>
+                ) : (
+                  <Badge variant={group.studentsCount >= group.maxStudents ? 'warning' : 'success'}>
+                    {group.studentsCount >= group.maxStudents ? "To'lgan" : 'Faol'}
+                  </Badge>
+                )}
               </div>
               <div className="flex items-center gap-2 mb-3">
                 <Avatar name={group.teacherName} size="sm" />
@@ -583,6 +665,15 @@ const Groups = () => {
               <div className="mt-4 pt-4 border-t flex items-center justify-between">
                 <span className="font-bold text-primary-600">{formatMoney(group.price)}</span>
                 <div className="flex gap-1">
+                  {isAdmin && group.status !== 'graduated' && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setSelectedGroup(group); setShowGraduateModal(true); }}
+                      className="p-2 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded-lg"
+                      title="Guruhni bitirish"
+                    >
+                      <GraduationCap className="w-4 h-4" />
+                    </button>
+                  )}
                   {isAdmin && (
                     <button onClick={(e) => openEditModal(group, e)} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"><Edit className="w-4 h-4" /></button>
                   )}
@@ -702,6 +793,32 @@ const Groups = () => {
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setShowDeleteModal(false)}>Bekor qilish</Button>
           <Button variant="danger" loading={formLoading} onClick={handleDelete}>O'chirish</Button>
+        </div>
+      </Modal>
+
+      {/* Graduate Modal */}
+      <Modal isOpen={showGraduateModal} onClose={() => setShowGraduateModal(false)} title="Guruhni bitirish">
+        <div className="space-y-4">
+          <div className="flex items-center gap-3 p-4 bg-purple-50 rounded-lg">
+            <GraduationCap className="w-8 h-8 text-purple-600 flex-shrink-0" />
+            <div>
+              <p className="font-medium text-purple-900">{selectedGroup?.name}</p>
+              <p className="text-sm text-purple-700">Bu guruh faol ro'yxatdan chiqariladi</p>
+            </div>
+          </div>
+          <p className="text-gray-600 text-sm">
+            Guruhni "Bitirgan" deb belgilaysizmi? Guruh faol ro'yxatdan o'chiriladi va arxivga o'tadi. Bu amalni qaytarib bo'lmaydi.
+          </p>
+          <div className="flex justify-end gap-2 pt-2 border-t">
+            <Button variant="ghost" onClick={() => setShowGraduateModal(false)}>Bekor qilish</Button>
+            <Button
+              loading={formLoading}
+              onClick={handleGraduate}
+              className="bg-purple-600 hover:bg-purple-700 text-white"
+            >
+              Bitirish
+            </Button>
+          </div>
         </div>
       </Modal>
 
