@@ -63,9 +63,14 @@ const Students = () => {
   const isAdmin = role === ROLES.ADMIN || role === ROLES.DIRECTOR;
   const isDirector = role === ROLES.DIRECTOR; // Faqat direktor o'chira oladi
   
-  // Subscription limit
+  // Faqat faol o'quvchilar (bitirganlar hisoblanmaydi)
+  const activeStudents = students.filter(s => s.status !== 'graduated');
+  // Faol guruhlar (bitirgan guruhlar tanlovda ko'rsatilmaydi)
+  const activeGroups = groups.filter(g => g.status !== 'graduated');
+
+  // Subscription limit (faqat faol o'quvchilar bo'yicha)
   const subscription = centerData?.subscription || 'trial';
-  const limitCheck = checkLimit(subscription, 'students', students.length);
+  const limitCheck = checkLimit(subscription, 'students', activeStudents.length);
 
   const isMountedRef = useRef(true);
   useEffect(() => {
@@ -684,10 +689,10 @@ const Students = () => {
           return;
         }
         
-        // Limit tekshirish
-        const newTotal = students.length + formattedData.length;
+        // Limit tekshirish (faqat faol o'quvchilar bo'yicha)
+        const newTotal = activeStudents.length + formattedData.length;
         if (limitCheck.limit !== -1 && newTotal > limitCheck.limit) {
-          toast.error(`Limit: ${limitCheck.limit}. Joriy: ${students.length}. Qo'shmoqchi: ${formattedData.length}. Ruxsat yo'q!`);
+          toast.error(`Limit: ${limitCheck.limit}. Faol: ${activeStudents.length}. Qo'shmoqchi: ${formattedData.length}. Ruxsat yo'q!`);
           return;
         }
         
@@ -782,7 +787,7 @@ const Students = () => {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{isTeacher ? "O'quvchilarim" : "O'quvchilar"}</h1>
           <p className="text-gray-500">
-            Jami {students.length} ta o'quvchi
+            Faol: {activeStudents.length} ta o'quvchi
             {limitCheck.limit !== -1 && (
               <span className="ml-2 text-sm">
                 (limit: {limitCheck.limit})
@@ -844,7 +849,7 @@ const Students = () => {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
             <input type="text" placeholder="Qidirish..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500" />
           </div>
-          <Select value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)} options={groups.map(g => ({ value: g.id, label: g.name }))} placeholder="Barcha guruhlar" className="w-full md:w-48" />
+          <Select value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)} options={activeGroups.map(g => ({ value: g.id, label: g.name }))} placeholder="Barcha guruhlar" className="w-full md:w-48" />
           <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value)}
@@ -1041,7 +1046,7 @@ const Students = () => {
             label="Yangi guruh"
             value={bulkGroupId}
             onChange={(e) => setBulkGroupId(e.target.value)}
-            options={groups.map(g => ({ value: g.id, label: g.name }))}
+            options={activeGroups.map(g => ({ value: g.id, label: g.name }))}
             placeholder="Guruh tanlang..."
           />
           <div className="flex justify-end gap-2">
@@ -1075,7 +1080,7 @@ const Students = () => {
               <FieldError error={formErrors.phone} />
             </div>
             <div>
-              <Select label="Guruh *" value={formData.groupId} onChange={(e) => setFormData({ ...formData, groupId: e.target.value })} options={groups.map(g => ({ value: g.id, label: g.name }))} />
+              <Select label="Guruh *" value={formData.groupId} onChange={(e) => setFormData({ ...formData, groupId: e.target.value })} options={activeGroups.map(g => ({ value: g.id, label: g.name }))} />
               <FieldError error={formErrors.groupId} />
             </div>
             <Input label="Tug'ilgan sana" type="date" value={formData.birthDate} onChange={(e) => setFormData({ ...formData, birthDate: e.target.value })} />
@@ -1236,7 +1241,7 @@ const Students = () => {
               <FieldError error={formErrors.phone} />
             </div>
             <div>
-              <Select label="Guruh *" value={formData.groupId} onChange={(e) => setFormData({ ...formData, groupId: e.target.value })} options={groups.map(g => ({ value: g.id, label: g.name }))} />
+              <Select label="Guruh *" value={formData.groupId} onChange={(e) => setFormData({ ...formData, groupId: e.target.value })} options={activeGroups.map(g => ({ value: g.id, label: g.name }))} />
               <FieldError error={formErrors.groupId} />
             </div>
             <Input label="Tug'ilgan sana" type="date" value={formData.birthDate} onChange={(e) => setFormData({ ...formData, birthDate: e.target.value })} />
@@ -1457,26 +1462,26 @@ const Students = () => {
           </div>
           
           {/* Limit check */}
-          {limitCheck.limit !== -1 && (students.length + importData.length > limitCheck.limit) && (
+          {limitCheck.limit !== -1 && (activeStudents.length + importData.length > limitCheck.limit) && (
             <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-center gap-2">
               <AlertTriangle className="w-5 h-5 text-red-600" />
               <p className="text-red-600 text-sm">
-                Limit oshib ketadi! Hozir: {students.length}, Import: {importData.length}, Limit: {limitCheck.limit}
+                Limit oshib ketadi! Faol: {activeStudents.length}, Import: {importData.length}, Limit: {limitCheck.limit}
               </p>
             </div>
           )}
-          
+
           <div className="flex justify-end gap-2 pt-4 border-t">
-            <Button 
-              variant="ghost" 
+            <Button
+              variant="ghost"
               onClick={() => { setShowImportModal(false); setImportData([]); }}
             >
               Bekor qilish
             </Button>
-            <Button 
+            <Button
               onClick={handleImport}
               loading={importLoading}
-              disabled={limitCheck.limit !== -1 && (students.length + importData.length > limitCheck.limit)}
+              disabled={limitCheck.limit !== -1 && (activeStudents.length + importData.length > limitCheck.limit)}
             >
               Import qilish ({importData.length} ta)
             </Button>
