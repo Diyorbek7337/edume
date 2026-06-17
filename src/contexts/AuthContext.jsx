@@ -2,7 +2,8 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import { signInWithEmailAndPassword, signOut as firebaseSignOut, onAuthStateChanged, setPersistence, browserSessionPersistence } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db, setCurrentCenter, getCurrentCenter } from '../services/firebase';
-import { setSentryUser, clearSentryUser } from '../services/sentry';
+import { setSentryUser, clearSentryUser, captureError } from '../services/sentry';
+import { toast } from 'react-toastify';
 
 const AuthContext = createContext(null);
 
@@ -50,7 +51,8 @@ export const AuthProvider = ({ children }) => {
             }
           }
         } catch (err) {
-          console.error('Error fetching user data:', err);
+          captureError(err, { context: 'fetchUserData' });
+          toast.error("Foydalanuvchi ma'lumotlari yuklanmadi. Sahifani yangilang.", { toastId: 'auth-fetch-error' });
         }
       } else {
         setUser(null);
@@ -77,10 +79,12 @@ export const AuthProvider = ({ children }) => {
       throw err;
     }
     const userDoc = await getDoc(doc(db, 'users', result.user.uid));
+    let role = null;
     if (userDoc.exists()) {
       const data = { id: userDoc.id, ...userDoc.data() };
+      role = data.role;
       setUserData(data);
-      
+
       // Center set qilish
       if (data.centerId) {
         setCurrentCenter(data.centerId);
@@ -88,10 +92,9 @@ export const AuthProvider = ({ children }) => {
         if (centerDoc.exists()) {
           setCenterData({ id: centerDoc.id, ...centerDoc.data() });
         }
-      } else {
       }
     }
-    return result;
+    return { ...result, role };
   };
 
   const signOut = async () => {
@@ -101,6 +104,14 @@ export const AuthProvider = ({ children }) => {
     setUserData(null);
     setCenterData(null);
     setCurrentCenter(null);
+  };
+
+  const refreshUserData = async () => {
+    if (!auth.currentUser) return;
+    const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+    if (userDoc.exists()) {
+      setUserData({ id: userDoc.id, ...userDoc.data() });
+    }
   };
 
   // centerId ni userData dan yoki getCurrentCenter dan olish
@@ -113,6 +124,7 @@ export const AuthProvider = ({ children }) => {
     loading,
     signIn,
     signOut,
+    refreshUserData,
     isAuthenticated: !!user,
     role: userData?.role || null,
     centerId,

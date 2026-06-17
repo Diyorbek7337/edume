@@ -154,7 +154,7 @@ const SuperAdmin = () => {
       trial: { label: 'Trial', color: 'warning', icon: Clock },
       basic: { label: 'Basic', color: 'info', icon: Zap },
       pro: { label: 'Pro', color: 'success', icon: Crown },
-      enterprise: { label: 'Enterprise', color: 'primary', icon: Shield },
+      enterprise: { label: 'Pro', color: 'primary', icon: Shield },
     };
     return badges[sub] || badges.trial;
   };
@@ -314,9 +314,8 @@ const SuperAdmin = () => {
             >
               <option value="all">Barcha tariflar</option>
               <option value="trial">Trial</option>
-              <option value="basic">Basic</option>
-              <option value="pro">Pro</option>
-              <option value="enterprise">Enterprise</option>
+              <option value="basic">Asosiy (99,000 so'm)</option>
+              <option value="pro">Pro (249,000 so'm)</option>
             </select>
           </div>
         </Card>
@@ -411,7 +410,7 @@ const SuperAdmin = () => {
                             <option value="trial">Trial</option>
                             <option value="basic">Basic</option>
                             <option value="pro">Pro</option>
-                            <option value="enterprise">Enterprise</option>
+                            <option value="pro">Pro (249,000 so'm)</option>
                           </select>
                           
                           {center.status === 'active' ? (

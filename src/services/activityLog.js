@@ -15,6 +15,8 @@ export const LOG_ACTIONS = {
   STUDENT_ADDED:     { key: 'student_added',     label: "O'quvchi qo'shildi",    color: 'green',  icon: 'UserPlus' },
   STUDENT_UPDATED:   { key: 'student_updated',   label: "O'quvchi tahrirlandi",  color: 'blue',   icon: 'Edit' },
   STUDENT_DELETED:   { key: 'student_deleted',   label: "O'quvchi o'chirildi",   color: 'red',    icon: 'Trash' },
+  STUDENT_ARCHIVED:  { key: 'student_archived',  label: "O'quvchi arxivlandi",   color: 'orange', icon: 'Archive' },
+  STUDENT_RESTORED:  { key: 'student_restored',  label: "O'quvchi tiklandi",     color: 'green',  icon: 'ArchiveRestore' },
   STUDENT_GRADUATED: { key: 'student_graduated', label: "O'quvchi bitirdi",      color: 'purple', icon: 'GraduationCap' },
   // Teachers
   TEACHER_ADDED:   { key: 'teacher_added',   label: "O'qituvchi qo'shildi",   color: 'green', icon: 'UserPlus' },
@@ -29,6 +31,10 @@ export const LOG_ACTIONS = {
   // Leads
   LEAD_ADDED:          { key: 'lead_added',          label: "Lid qo'shildi",         color: 'green',  icon: 'UserPlus' },
   LEAD_STATUS_CHANGED: { key: 'lead_status_changed', label: 'Lid holati o\'zgartirildi', color: 'orange', icon: 'RefreshCw' },
+  // Expenses
+  EXPENSE_ADDED:   { key: 'expense_added',   label: "Harajat qo'shildi",   color: 'red',  icon: 'TrendingDown' },
+  EXPENSE_UPDATED: { key: 'expense_updated', label: 'Harajat tahrirlandi', color: 'blue', icon: 'Edit' },
+  EXPENSE_DELETED: { key: 'expense_deleted', label: "Harajat o'chirildi",  color: 'red',  icon: 'Trash' },
 };
 
 // Find action meta by key string (for display)

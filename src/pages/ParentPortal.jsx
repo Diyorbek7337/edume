@@ -11,6 +11,8 @@ import {
 } from '../services/api';
 import { formatMoney, formatDate, toISODateString } from '../utils/helpers';
 import { Link } from 'react-router-dom';
+import { toast } from 'react-toastify';
+import { captureError } from '../services/sentry';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 const DAYS = ['Yak', 'Dush', 'Sesh', 'Chor', 'Pay', 'Jum', 'Shan'];
@@ -26,19 +28,24 @@ const ParentPortal = () => {
   useEffect(() => {
     const fetchChildren = async () => {
       try {
-        const students = await studentsAPI.getAll();
         const normalizePhone = (p) => p?.replace(/\D/g, '') || '';
         const userPhone = normalizePhone(userData?.phone);
         const childIds = userData?.childIds || (userData?.childId ? [userData.childId] : []);
 
-        const myChildren = students.filter(s => {
-          const parentPhone = normalizePhone(s.parentPhone);
-          return (
-            s.parentPhone === userData?.phone ||
-            (userPhone && parentPhone === userPhone) ||
-            childIds.includes(s.id)
-          );
-        });
+        let myChildren = [];
+
+        if (childIds.length > 0) {
+          // childIds mavjud bo'lsa, to'g'ridan-to'g'ri har birini olish (list ruxsati shart emas)
+          const fetched = await Promise.all(childIds.map(id => studentsAPI.getById(id)));
+          myChildren = fetched.filter(Boolean);
+        } else {
+          // childIds yo'q — telefon orqali qidirish
+          const allStudents = await studentsAPI.getAll();
+          myChildren = allStudents.filter(s => {
+            const parentPhone = normalizePhone(s.parentPhone);
+            return s.parentPhone === userData?.phone || (userPhone && parentPhone === userPhone);
+          });
+        }
 
         setChildren(myChildren);
         if (myChildren.length > 0) {
@@ -47,7 +54,8 @@ const ParentPortal = () => {
           setLoading(false);
         }
       } catch (err) {
-        console.error('ParentPortal fetchChildren error:', err);
+        captureError(err, { context: 'ParentPortal fetchChildren' });
+        toast.error("Farzand ma'lumotlari yuklanmadi. Sahifani yangilang.", { toastId: 'parent-load-error' });
         setLoading(false);
       }
     };
@@ -70,24 +78,24 @@ const ParentPortal = () => {
 
         const primaryGroupId = studentGroups[0]?.id;
 
-        const [grades, attendance, allPayments, schedule] = await Promise.all([
-          primaryGroupId ? gradesAPI.getByGroup(primaryGroupId) : Promise.resolve([]),
-          primaryGroupId ? attendanceAPI.getByGroup(primaryGroupId) : Promise.resolve([]),
-          paymentsAPI.getAll(),
+        const [myGrades, myAttendance, myPayments, schedule] = await Promise.all([
+          gradesAPI.getByStudent(student.id),
+          attendanceAPI.getByStudent(student.id),
+          paymentsAPI.getByStudent(student.id),
           scheduleAPI.getAll(),
         ]);
 
-        const myGrades = grades.filter(g => g.studentId === student.id);
-        const myAttendance = attendance.filter(a => a.studentId === student.id);
-        const myPayments = allPayments.filter(p => p.studentId === student.id);
+        // Monthly bills (yangi tizim) — qarz hisoblash uchun
+        const myBills = await paymentsAPI.getMonthlyBillsByStudent(student.id);
 
         // Only show schedule for student's groups
         const groupIds = new Set(studentGroups.map(g => g.id));
         const mySchedule = schedule.filter(s => groupIds.has(s.groupId));
 
-        setChildData({ student, groups: studentGroups, grades: myGrades, attendance: myAttendance, payments: myPayments, schedule: mySchedule });
+        setChildData({ student, groups: studentGroups, grades: myGrades, attendance: myAttendance, payments: myPayments, bills: myBills, schedule: mySchedule });
       } catch (err) {
-        console.error('ParentPortal fetchChildData error:', err);
+        captureError(err, { context: 'ParentPortal fetchChildData' });
+        toast.error("Ma'lumotlar yuklanmadi. Sahifani yangilang.", { toastId: 'parent-load-error' });
       } finally {
         setLoading(false);
       }
@@ -111,17 +119,30 @@ const ParentPortal = () => {
     );
   }
 
-  const { student, groups, grades, attendance, payments, schedule } = childData || {};
+  const { student, groups, grades, attendance, payments, bills, schedule } = childData || {};
 
   // Stats
   const now = new Date();
   const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  const totalDebt = payments?.filter(p => p.status === 'pending').reduce((s, p) => s + (p.amount || 0), 0) || 0;
-  const hasPaidThisMonth = payments?.some(p => p.status === 'paid' && p.month === currentMonthStr);
-  const paidTotal = payments?.filter(p => p.status === 'paid').reduce((s, p) => s + (p.amount || 0), 0) || 0;
 
-  const avgGrade = grades?.length > 0
-    ? Math.round(grades.reduce((s, g) => s + (g.maxGrade > 0 ? (g.grade / g.maxGrade) * 100 : 0), 0) / grades.length)
+  // Qarz hisoblash: monthly_bills (yangi tizim) ustuvor, aks holda eski payments
+  const totalDebt = bills?.length > 0
+    ? bills.filter(b => (b.remainingAmount || 0) > 0).reduce((s, b) => s + b.remainingAmount, 0)
+    : payments?.filter(p => p.status === 'pending').reduce((s, p) => s + (p.amount || 0), 0) || 0;
+
+  const currentBill = bills?.find(b => b.month === currentMonthStr);
+  const hasPaidThisMonth = currentBill
+    ? (currentBill.status === 'paid' || (currentBill.remainingAmount || 0) === 0)
+    : payments?.some(p => p.status === 'paid' && p.month === currentMonthStr);
+
+  const paidTotal = bills?.length > 0
+    ? bills.reduce((s, b) => s + (b.paidAmount || 0), 0)
+    : payments?.filter(p => p.status === 'paid').reduce((s, p) => s + (p.amount || 0), 0) || 0;
+
+  // Davomat va attendance turini o'rtachadan chiqarish
+  const scoredGrades = grades?.filter(g => g.type !== 'attendance') || [];
+  const avgGrade = scoredGrades.length > 0
+    ? Math.round(scoredGrades.reduce((s, g) => s + (g.maxGrade > 0 ? (g.grade / g.maxGrade) * 100 : 0), 0) / scoredGrades.length)
     : null;
 
   const presentCount = attendance?.filter(a => a.status === 'present').length || 0;

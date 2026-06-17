@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { Save, User, Phone, Mail, Lock, AlertCircle } from 'lucide-react';
+import { Save, User, Phone, Mail, Lock, AlertCircle, MessageCircle, Copy, Check } from 'lucide-react';
 import { Card, Button, Input, Avatar, Badge } from '../components/common';
 import { useAuth } from '../contexts/AuthContext';
 import { usersAPI } from '../services/api';
 import { ROLE_NAMES } from '../utils/constants';
 import { updatePassword, reauthenticateWithCredential, EmailAuthProvider } from 'firebase/auth';
-import { auth } from '../services/firebase';
+import { auth, db } from '../services/firebase';
+import { doc, updateDoc } from 'firebase/firestore';
 
 const Profile = () => {
   const { userData, user } = useAuth();
@@ -20,7 +21,10 @@ const Profile = () => {
   const [passwordError, setPasswordError] = useState('');
   const [passwordSuccess, setPasswordSuccess] = useState(false);
 
-  // Birinchi marta kirganda parolni o'zgartirish kerakmi
+  const [telegramCode, setTelegramCode] = useState('');
+  const [generatingCode, setGeneratingCode] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
+
   const mustChangePassword = userData?.mustChangePassword;
 
   const handleSave = async (e) => {
@@ -57,22 +61,15 @@ const Profile = () => {
 
     setSavingPassword(true);
     try {
-      // Avval joriy parol bilan qayta autentifikatsiya
       const credential = EmailAuthProvider.credential(user.email, passwordData.current);
       await reauthenticateWithCredential(user, credential);
-      
-      // Keyin yangi parolni o'rnatish
       await updatePassword(user, passwordData.new);
-      
-      // mustChangePassword ni false qilish
       if (mustChangePassword) {
         await usersAPI.update(userData?.id, { mustChangePassword: false });
       }
-      
       setPasswordSuccess(true);
       setPasswordData({ current: '', new: '', confirm: '' });
     } catch (err) {
-      console.error('Password change error:', err);
       if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
         setPasswordError("Joriy parol noto'g'ri");
       } else if (err.code === 'auth/too-many-requests') {
@@ -86,6 +83,28 @@ const Profile = () => {
     finally { setSavingPassword(false); }
   };
 
+  const generateTelegramCode = async () => {
+    setGeneratingCode(true);
+    try {
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiry = new Date(Date.now() + 15 * 60 * 1000);
+      await updateDoc(doc(db, 'users', user.uid), {
+        telegramLinkCode: code,
+        telegramLinkCodeExpiry: expiry,
+      });
+      setTelegramCode(code);
+    } catch (err) {
+      alert("Kod yaratishda xatolik yuz berdi");
+    }
+    setGeneratingCode(false);
+  };
+
+  const copyCode = () => {
+    navigator.clipboard.writeText(`/connect ${telegramCode}`);
+    setCodeCopied(true);
+    setTimeout(() => setCodeCopied(false), 2000);
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div>
@@ -93,7 +112,6 @@ const Profile = () => {
         <p className="text-gray-500">Shaxsiy ma'lumotlaringiz</p>
       </div>
 
-      {/* Parolni o'zgartirish kerakligi haqida ogohlantirish */}
       {mustChangePassword && (
         <Card className="bg-yellow-50 border-yellow-200">
           <div className="flex items-start gap-3">
@@ -109,16 +127,19 @@ const Profile = () => {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Profile Card */}
         <Card className="text-center">
           <Avatar name={userData?.fullName} size="xl" className="mx-auto" />
           <h2 className="text-xl font-bold mt-4">{userData?.fullName}</h2>
           <Badge variant="primary" className="mt-2">{ROLE_NAMES[userData?.role]}</Badge>
           <p className="text-sm text-gray-500 mt-2">{userData?.email}</p>
           {userData?.phone && <p className="text-sm text-gray-500">{userData?.phone}</p>}
+          {userData?.telegramId && (
+            <p className="text-sm text-blue-500 mt-1 flex items-center justify-center gap-1">
+              <MessageCircle className="w-3.5 h-3.5" /> Telegram ulangan
+            </p>
+          )}
         </Card>
 
-        {/* Edit Form */}
         <Card className="lg:col-span-2">
           <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
             <User className="w-5 h-5 text-primary-600" /> Shaxsiy ma'lumotlar
@@ -150,25 +171,91 @@ const Profile = () => {
         </Card>
       </div>
 
-      {/* Change Password */}
+      {/* Telegram ulash — A variant */}
+      <Card>
+        <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+          <MessageCircle className="w-5 h-5 text-blue-500" /> Telegram ulash
+        </h3>
+
+        {userData?.telegramId ? (
+          <div className="flex items-center gap-3 p-4 bg-green-50 border border-green-200 rounded-xl">
+            <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+              <Check className="w-5 h-5 text-green-600" />
+            </div>
+            <div>
+              <p className="font-medium text-green-800">Telegram ulangan</p>
+              {userData?.telegramUsername && (
+                <p className="text-sm text-green-600">@{userData.telegramUsername}</p>
+              )}
+              <p className="text-xs text-green-500 mt-0.5">
+                Bildirishnomalar Telegramga yuboriladi
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Telegram botga ulanish uchun kod oling va botga yuboring.
+              Shunda bildirishnomalar Telegramingizga keladi.
+            </p>
+
+            {telegramCode ? (
+              <div className="space-y-3">
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                  <p className="text-sm font-medium text-blue-800 mb-3">
+                    Quyidagi buyruqni Telegram botga yuboring:
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 bg-white border border-blue-200 rounded-lg px-4 py-3">
+                      <code className="text-xl font-mono font-bold tracking-widest text-blue-900">
+                        /connect {telegramCode}
+                      </code>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={copyCode}
+                      className="p-3 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg transition"
+                      title="Nusxalash"
+                    >
+                      {codeCopied
+                        ? <Check className="w-5 h-5 text-green-600" />
+                        : <Copy className="w-5 h-5" />}
+                    </button>
+                  </div>
+                  <p className="text-xs text-blue-500 mt-2">⏱ Bu kod 15 daqiqa amal qiladi</p>
+                </div>
+                <Button variant="ghost" size="sm" onClick={generateTelegramCode} loading={generatingCode}>
+                  Yangi kod olish
+                </Button>
+              </div>
+            ) : (
+              <Button onClick={generateTelegramCode} loading={generatingCode} icon={MessageCircle} variant="outline">
+                Telegram ulash kodi olish
+              </Button>
+            )}
+          </div>
+        )}
+      </Card>
+
+      {/* Parolni o'zgartirish */}
       <Card className={mustChangePassword ? 'ring-2 ring-yellow-400' : ''}>
         <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
           <Lock className="w-5 h-5 text-primary-600" /> Parolni o'zgartirish
           {mustChangePassword && <Badge variant="warning">Majburiy</Badge>}
         </h3>
-        
+
         {passwordError && (
           <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm">
             {passwordError}
           </div>
         )}
-        
+
         {passwordSuccess && (
           <div className="mb-4 p-3 bg-green-50 border border-green-200 text-green-600 rounded-lg text-sm">
             Parol muvaffaqiyatli o'zgartirildi!
           </div>
         )}
-        
+
         <form onSubmit={handleChangePassword} className="space-y-4 max-w-md">
           <Input
             label="Joriy parol"

@@ -1,11 +1,27 @@
-import { 
-  collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc, 
-  query, where, orderBy, serverTimestamp, setDoc
+import {
+  collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc,
+  query, where, orderBy, limit, serverTimestamp, setDoc, writeBatch
 } from 'firebase/firestore';
 import { createUserWithEmailAndPassword, getAuth, signOut } from 'firebase/auth';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { db, getCurrentCenter, getCenterCollection, storage } from './firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { captureError } from './sentry';
+import { toast } from 'react-toastify';
+
+// console.error + Sentry wrapper — barcha catch bloklarda ishlatiladi
+// silent=true — fon operatsiyalari uchun (getUnreadCount, markAsRead va h.k.)
+const _log = (...args) => Function.prototype.apply.call(console.error, console, args);
+const logError = (message, err, silent = false) => {
+  _log(message, err);
+  captureError(err, { context: message });
+  if (!silent) {
+    toast.error("Ma'lumot yuklashda xatolik yuz berdi. Sahifani yangilang.", {
+      toastId: 'api-error',
+      autoClose: 5000,
+    });
+  }
+};
 
 // Secondary Firebase instance - faqat bir marta yaratiladi
 let secondaryApp = null;
@@ -37,7 +53,7 @@ const getSecondaryAuth = () => {
 const centerCollection = (name) => {
   const centerId = getCurrentCenter();
   if (!centerId) {
-    console.error('No center selected! Please login again.');
+    logError('No center selected! Please login again.');
     throw new Error('No center selected');
   }
   return collection(db, `centers/${centerId}/${name}`);
@@ -46,7 +62,7 @@ const centerCollection = (name) => {
 const centerDoc = (name, id) => {
   const centerId = getCurrentCenter();
   if (!centerId) {
-    console.error('No center selected! Please login again.');
+    logError('No center selected! Please login again.');
     throw new Error('No center selected');
   }
   return doc(db, `centers/${centerId}/${name}`, id);
@@ -59,7 +75,7 @@ export const centersAPI = {
       const snapshot = await getDocs(collection(db, 'centers'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('centers getAll error:', err);
+      logError('centers getAll error:', err);
       return [];
     }
   },
@@ -69,7 +85,7 @@ export const centersAPI = {
       const docSnap = await getDoc(doc(db, 'centers', id));
       return docSnap.exists() ? { id: docSnap.id, ...docSnap.data() } : null;
     } catch (err) {
-      console.error('centers getById error:', err);
+      logError('centers getById error:', err);
       return null;
     }
   },
@@ -148,21 +164,12 @@ export const centersAPI = {
       });
 
       // Sign out from secondary auth
-      try {
-        await signOut(auth);
-      } catch (e) {
-        console.log('Secondary signOut warning:', e);
-      }
+      await signOut(auth).catch(e => logError('secondary signOut warning:', e, true));
 
       return { centerId, odamId: uid };
     } catch (err) {
-      console.error('createWithAdmin error:', err);
-      
-      // Sign out anyway
-      try {
-        await signOut(auth);
-      } catch (e) {}
-      
+      logError('createWithAdmin error:', err);
+      await signOut(auth).catch(() => {});
       throw err;
     }
   },
@@ -177,7 +184,7 @@ export const usersAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('users getAll error:', err);
+      logError('users getAll error:', err);
       return [];
     }
   },
@@ -193,7 +200,7 @@ export const usersAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('getByRole error:', err);
+      logError('getByRole error:', err);
       return [];
     }
   },
@@ -209,7 +216,7 @@ export const usersAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('getByCenterId error:', err);
+      logError('getByCenterId error:', err);
       return [];
     }
   },
@@ -229,6 +236,7 @@ export const usersAPI = {
         telegram: data.telegram || '',
         role: data.role,
         centerId: centerId,
+        ...(data.mustChangePassword && { mustChangePassword: true }),
         // Parent uchun qo'shimcha fieldlar
         ...(data.role === 'parent' && {
           childId: data.childId || null,
@@ -251,7 +259,7 @@ export const usersAPI = {
       
       return { id: uid, ...userData };
     } catch (err) {
-      console.error('usersAPI.create error:', err);
+      logError('usersAPI.create error:', err);
       
       // Sign out anyway
       try {
@@ -260,6 +268,16 @@ export const usersAPI = {
       
       throw err;
     }
+  },
+
+  upsertById: async (uid, data) => {
+    const centerId = getCurrentCenter();
+    await setDoc(doc(db, 'users', uid), {
+      ...data,
+      centerId,
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+    return { id: uid, ...data };
   },
 
   update: async (id, data) => {
@@ -283,7 +301,7 @@ export const studentsAPI = {
       const snapshot = await getDocs(centerCollection('students'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('students getAll error:', err);
+      logError('students getAll error:', err);
       return [];
     }
   },
@@ -294,7 +312,7 @@ export const studentsAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('students getByGroup error:', err);
+      logError('students getByGroup error:', err);
       return [];
     }
   },
@@ -335,7 +353,7 @@ export const teachersAPI = {
       const snapshot = await getDocs(centerCollection('teachers'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('teachers getAll error:', err);
+      logError('teachers getAll error:', err);
       return [];
     }
   },
@@ -376,7 +394,7 @@ export const groupsAPI = {
       const snapshot = await getDocs(centerCollection('groups'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('groups getAll error:', err);
+      logError('groups getAll error:', err);
       return [];
     }
   },
@@ -387,7 +405,7 @@ export const groupsAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('groups getByTeacher error:', err);
+      logError('groups getByTeacher error:', err);
       return [];
     }
   },
@@ -429,7 +447,23 @@ export const paymentsAPI = {
       const snapshot = await getDocs(centerCollection('payments'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('payments getAll error:', err);
+      logError('payments getAll error:', err);
+      return [];
+    }
+  },
+
+  // Dashboard uchun: faqat so'nggi N oy to'lovlarini yuklaydi (getAll dan tezroq)
+  getSince: async (sinceIso) => {
+    try {
+      const q = query(
+        centerCollection('payments'),
+        where('paidAt', '>=', sinceIso),
+        orderBy('paidAt', 'desc')
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err) {
+      logError('payments getSince error:', err);
       return [];
     }
   },
@@ -440,7 +474,7 @@ export const paymentsAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('payments getByStudent error:', err);
+      logError('payments getByStudent error:', err);
       return [];
     }
   },
@@ -472,7 +506,7 @@ export const paymentsAPI = {
       const snapshot = await getDocs(centerCollection('monthly_bills'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('monthly_bills getAll error:', err);
+      logError('monthly_bills getAll error:', err);
       return [];
     }
   },
@@ -483,7 +517,7 @@ export const paymentsAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('monthly_bills getByStudent error:', err);
+      logError('monthly_bills getByStudent error:', err);
       return [];
     }
   },
@@ -494,7 +528,7 @@ export const paymentsAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('monthly_bills getByMonth error:', err);
+      logError('monthly_bills getByMonth error:', err);
       return [];
     }
   },
@@ -528,7 +562,7 @@ export const attendanceAPI = {
       const snapshot = await getDocs(centerCollection('attendance'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('attendance getAll error:', err);
+      logError('attendance getAll error:', err);
       return [];
     }
   },
@@ -539,7 +573,7 @@ export const attendanceAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('attendance getByGroup error:', err);
+      logError('attendance getByGroup error:', err);
       return [];
     }
   },
@@ -550,22 +584,23 @@ export const attendanceAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('attendance getByDate error:', err);
+      logError('attendance getByDate error:', err);
       return [];
     }
   },
 
   getByGroupAndDate: async (groupId, date) => {
     try {
-      // Avval guruh bo'yicha olish, keyin date bo'yicha filter
-      const q = query(centerCollection('attendance'), where('groupId', '==', groupId));
+      // Composite index (groupId ASC, date ASC) ishlatiladi — firestore.indexes.json
+      const q = query(
+        centerCollection('attendance'),
+        where('groupId', '==', groupId),
+        where('date', '==', date)
+      );
       const snapshot = await getDocs(q);
-      const results = snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() }))
-        .filter(a => a.date === date);
-      return results;
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('attendance getByGroupAndDate error:', err);
+      logError('attendance getByGroupAndDate error:', err);
       return [];
     }
   },
@@ -584,22 +619,30 @@ export const attendanceAPI = {
   },
 
   bulkCreate: async (records) => {
+    const CHUNK = 499;
+    const coll = centerCollection('attendance');
     const results = [];
-    for (const record of records) {
-      const docRef = await addDoc(centerCollection('attendance'), {
-        ...record,
-        createdAt: serverTimestamp(),
+    for (let i = 0; i < records.length; i += CHUNK) {
+      const batch = writeBatch(db);
+      records.slice(i, i + CHUNK).forEach(record => {
+        const ref = doc(coll);
+        batch.set(ref, { ...record, createdAt: serverTimestamp() });
+        results.push({ id: ref.id, ...record });
       });
-      results.push({ id: docRef.id, ...record });
+      await batch.commit();
     }
     return results;
   },
 
   bulkUpdate: async (records) => {
-    for (const record of records) {
-      if (record.id) {
-        await updateDoc(centerDoc('attendance', record.id), record);
-      }
+    const CHUNK = 499;
+    const toUpdate = records.filter(r => r.id);
+    for (let i = 0; i < toUpdate.length; i += CHUNK) {
+      const batch = writeBatch(db);
+      toUpdate.slice(i, i + CHUNK).forEach(record => {
+        batch.update(centerDoc('attendance', record.id), record);
+      });
+      await batch.commit();
     }
     return records;
   },
@@ -610,20 +653,29 @@ export const attendanceAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('attendance getByStudent error:', err);
+      logError('attendance getByStudent error:', err);
       return [];
     }
   },
 
   getByGroupAndMonth: async (groupId, month) => {
+    // month = "2024-01" formatida
+    // Composite index (groupId ASC, date ASC) mavjud — firestore.indexes.json
+    const [y, m] = month.split('-').map(Number);
+    const nextY = m === 12 ? y + 1 : y;
+    const nextM = m === 12 ? 1 : m + 1;
+    const nextMonth = `${nextY}-${String(nextM).padStart(2, '0')}`;
     try {
-      const q = query(centerCollection('attendance'), where('groupId', '==', groupId));
+      const q = query(
+        centerCollection('attendance'),
+        where('groupId', '==', groupId),
+        where('date', '>=', `${month}-01`),
+        where('date', '<', `${nextMonth}-01`)
+      );
       const snapshot = await getDocs(q);
-      return snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() }))
-        .filter(a => a.date && a.date.startsWith(month));
+      return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     } catch (err) {
-      console.error('attendance getByGroupAndMonth error:', err);
+      logError('attendance getByGroupAndMonth error:', err);
       return [];
     }
   },
@@ -643,29 +695,34 @@ export const attendanceAPI = {
         existing[doc.data().studentId] = { id: doc.id, ...doc.data() };
       });
 
-      // Har bir record uchun
-      for (const record of records) {
-        if (existing[record.studentId]) {
-          // Mavjud - yangilash
-          await updateDoc(centerDoc('attendance', existing[record.studentId].id), {
-            status: record.status,
-            updatedAt: serverTimestamp()
-          });
-        } else {
-          // Yangi - yaratish
-          await addDoc(centerCollection('attendance'), {
-            ...record,
-            groupId,
-            date,
-            createdAt: serverTimestamp(),
-          });
-        }
+      const CHUNK = 499;
+      const coll = centerCollection('attendance');
+      for (let i = 0; i < records.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        records.slice(i, i + CHUNK).forEach(record => {
+          const existingId = existing[record.studentId]?.id;
+          if (existingId) {
+            batch.update(centerDoc('attendance', existingId), {
+              status: record.status,
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            const ref = doc(coll);
+            batch.set(ref, { ...record, groupId, date, createdAt: serverTimestamp() });
+          }
+        });
+        await batch.commit();
       }
       return true;
     } catch (err) {
-      console.error('attendance save error:', err);
+      logError('attendance save error:', err);
       throw err;
     }
+  },
+
+  delete: async (id) => {
+    await deleteDoc(centerDoc('attendance', id));
+    return true;
   },
 };
 
@@ -676,7 +733,7 @@ export const gradesAPI = {
       const snapshot = await getDocs(centerCollection('grades'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('grades getAll error:', err);
+      logError('grades getAll error:', err);
       return [];
     }
   },
@@ -687,7 +744,7 @@ export const gradesAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('grades getByGroup error:', err);
+      logError('grades getByGroup error:', err);
       return [];
     }
   },
@@ -698,7 +755,7 @@ export const gradesAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('grades getByStudent error:', err);
+      logError('grades getByStudent error:', err);
       return [];
     }
   },
@@ -765,7 +822,7 @@ export const leadsAPI = {
       const snapshot = await getDocs(centerCollection('leads'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('leads getAll error:', err);
+      logError('leads getAll error:', err);
       return [];
     }
   },
@@ -802,7 +859,7 @@ export const settingsAPI = {
       const docSnap = await getDoc(doc(db, `centers/${centerId}/settings`, 'main'));
       return docSnap.exists() ? docSnap.data() : null;
     } catch (err) {
-      console.error('settings get error:', err);
+      logError('settings get error:', err);
       return null;
     }
   },
@@ -825,7 +882,7 @@ export const scheduleAPI = {
       const snapshot = await getDocs(centerCollection('schedule'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('schedule getAll error:', err);
+      logError('schedule getAll error:', err);
       return [];
     }
   },
@@ -836,7 +893,7 @@ export const scheduleAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('schedule getByGroup error:', err);
+      logError('schedule getByGroup error:', err);
       return [];
     }
   },
@@ -847,7 +904,7 @@ export const scheduleAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('schedule getByTeacher error:', err);
+      logError('schedule getByTeacher error:', err);
       return [];
     }
   },
@@ -881,7 +938,7 @@ export const teacherRatingsAPI = {
       const snapshot = await getDocs(centerCollection('teacher_ratings'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('teacher_ratings getAll error:', err);
+      logError('teacher_ratings getAll error:', err);
       return [];
     }
   },
@@ -892,30 +949,26 @@ export const teacherRatingsAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('teacher_ratings getByTeacher error:', err);
+      logError('teacher_ratings getByTeacher error:', err);
       return [];
     }
   },
 
   create: async (data) => {
-    const docRef = await addDoc(centerCollection('teacher_ratings'), {
-      ...data,
-      createdAt: serverTimestamp(),
-    });
-    return { id: docRef.id, ...data };
+    // Composite ID: {teacherId}_{odamId} — bir o'quvchi bir o'qituvchiga faqat bir baho bera oladi
+    const docId = `${data.teacherId}_${data.odamId}`;
+    const docRef = doc(centerCollection('teacher_ratings'), docId);
+    await setDoc(docRef, { ...data, createdAt: serverTimestamp() });
+    return { id: docId, ...data };
   },
 
   checkExisting: async (teacherId, odamId) => {
     try {
-      const q = query(
-        centerCollection('teacher_ratings'),
-        where('teacherId', '==', teacherId),
-        where('odamId', '==', odamId)
-      );
-      const snapshot = await getDocs(q);
-      return !snapshot.empty;
+      const docId = `${teacherId}_${odamId}`;
+      const snap = await getDoc(doc(centerCollection('teacher_ratings'), docId));
+      return snap.exists();
     } catch (err) {
-      console.error('checkExisting error:', err);
+      logError('checkExisting error:', err);
       return false;
     }
   },
@@ -928,7 +981,7 @@ export const homeworkAPI = {
       const snapshot = await getDocs(centerCollection('homework'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('homework getAll error:', err);
+      logError('homework getAll error:', err);
       return [];
     }
   },
@@ -939,7 +992,7 @@ export const homeworkAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('homework getByGroup error:', err);
+      logError('homework getByGroup error:', err);
       return [];
     }
   },
@@ -971,7 +1024,7 @@ export const homeworkAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('getSubmissions error:', err);
+      logError('getSubmissions error:', err);
       return [];
     }
   },
@@ -1014,23 +1067,22 @@ export const homeworkAPI = {
 
 // ==================== CHAT API ====================
 export const chatAPI = {
-  getMessages: async (groupId, limit = 100) => {
+  getMessages: async (groupId, msgLimit = 100) => {
     try {
+      // Compound index (groupId ASC, createdAt DESC) ishlatiladi — firestore.indexes.json
       const q = query(
         centerCollection('chat_messages'),
-        where('groupId', '==', groupId)
+        where('groupId', '==', groupId),
+        orderBy('createdAt', 'desc'),
+        limit(msgLimit)
       );
       const snapshot = await getDocs(q);
+      // desc tartibda keladi — ko'rsatish uchun asc ga o'giramiz
       return snapshot.docs
         .map(doc => ({ id: doc.id, ...doc.data() }))
-        .sort((a, b) => {
-          const timeA = a.timestamp?.seconds || new Date(a.timestamp).getTime() / 1000;
-          const timeB = b.timestamp?.seconds || new Date(b.timestamp).getTime() / 1000;
-          return timeA - timeB;
-        })
-        .slice(-limit);
+        .reverse();
     } catch (err) {
-      console.error('getMessages error:', err);
+      logError('getMessages error:', err);
       return [];
     }
   },
@@ -1074,7 +1126,7 @@ export const chatAPI = {
         return msgTime > lastReadTime && doc.data().senderId !== odamId;
       }).length;
     } catch (err) {
-      console.error('getUnreadCount error:', err);
+      logError('getUnreadCount error:', err, true); // silent — fon operatsiyasi
       return 0;
     }
   },
@@ -1087,7 +1139,7 @@ export const chatAPI = {
         groupId
       });
     } catch (err) {
-      console.error('markAsRead error:', err);
+      logError('markAsRead error:', err, true); // silent — fon operatsiyasi
     }
   },
 };
@@ -1099,7 +1151,7 @@ export const quizAPI = {
       const snapshot = await getDocs(centerCollection('quizzes'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('quizzes getAll error:', err);
+      logError('quizzes getAll error:', err);
       return [];
     }
   },
@@ -1110,7 +1162,7 @@ export const quizAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('quizzes getByGroup error:', err);
+      logError('quizzes getByGroup error:', err);
       return [];
     }
   },
@@ -1142,7 +1194,7 @@ export const quizAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('getResults error:', err);
+      logError('getResults error:', err);
       return [];
     }
   },
@@ -1182,7 +1234,7 @@ export const materialsAPI = {
       const snapshot = await getDocs(centerCollection('materials'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('materials getAll error:', err);
+      logError('materials getAll error:', err);
       return [];
     }
   },
@@ -1193,7 +1245,7 @@ export const materialsAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('materials getByGroup error:', err);
+      logError('materials getByGroup error:', err);
       return [];
     }
   },
@@ -1226,7 +1278,7 @@ export const rewardsAPI = {
       const snapshot = await getDocs(centerCollection('rewards'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('rewards getAll error:', err);
+      logError('rewards getAll error:', err);
       return [];
     }
   },
@@ -1251,13 +1303,29 @@ export const rewardsAPI = {
     await deleteDoc(centerDoc('rewards', id));
   },
 
-  // Sotib olishlar
+  // Sotib olishlar — admin uchun barchasi, o'quvchi uchun o'zining
   getPurchases: async () => {
     try {
       const snapshot = await getDocs(centerCollection('reward_purchases'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('getPurchases error:', err);
+      logError('getPurchases error:', err);
+      return [];
+    }
+  },
+
+  // Compound index (studentId ASC, createdAt DESC) — firestore.indexes.json
+  getPurchasesByStudent: async (studentId) => {
+    try {
+      const q = query(
+        centerCollection('reward_purchases'),
+        where('studentId', '==', studentId),
+        orderBy('createdAt', 'desc')
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err) {
+      logError('getPurchasesByStudent error:', err);
       return [];
     }
   },
@@ -1285,7 +1353,7 @@ export const feedbackAPI = {
       const snapshot = await getDocs(collection(db, 'feedback'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('feedback error:', err);
+      logError('feedback error:', err);
       return [];
     }
   },
@@ -1312,7 +1380,7 @@ export const certificatesAPI = {
       const snapshot = await getDocs(centerCollection('certificates'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('certificates getAll error:', err);
+      logError('certificates getAll error:', err);
       return [];
     }
   },
@@ -1323,7 +1391,7 @@ export const certificatesAPI = {
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
-      console.error('certificates getByStudent error:', err);
+      logError('certificates getByStudent error:', err);
       return [];
     }
   },
@@ -1384,5 +1452,40 @@ export const certificatesAPI = {
     } catch (err) {
       return null;
     }
+  },
+};
+
+// ==================== EXPENSES (Harajatlar) ====================
+
+export const expensesAPI = {
+  getAll: async () => {
+    try {
+      const snapshot = await getDocs(centerCollection('expenses'));
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err) {
+      logError('expenses getAll error:', err);
+      return [];
+    }
+  },
+
+  create: async (data) => {
+    const docRef = await addDoc(centerCollection('expenses'), {
+      ...data,
+      createdAt: serverTimestamp(),
+    });
+    return { id: docRef.id, ...data };
+  },
+
+  update: async (id, data) => {
+    await updateDoc(centerDoc('expenses', id), {
+      ...data,
+      updatedAt: serverTimestamp(),
+    });
+    return { id, ...data };
+  },
+
+  delete: async (id) => {
+    await deleteDoc(centerDoc('expenses', id));
+    return true;
   },
 };

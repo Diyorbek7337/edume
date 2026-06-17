@@ -19,6 +19,7 @@ const Input = forwardRef(({
   const baseInputClasses = `
     w-full px-4 py-3 rounded-xl border-2 transition-all duration-200
     focus:outline-none focus:ring-0
+    text-base md:text-sm
     placeholder:text-gray-400 dark:placeholder:text-gray-500
     dark:text-gray-100
     disabled:bg-gray-100 dark:disabled:bg-gray-700 disabled:cursor-not-allowed

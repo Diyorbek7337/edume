@@ -1,191 +1,89 @@
 // Tarif rejalari va cheklovlar
 export const SUBSCRIPTION_PLANS = {
+  // 30 kunlik bepul VIP sinov — Pro darajasida
   trial: {
     name: 'Trial',
-    nameUz: 'Sinov',
+    nameUz: '30 kunlik VIP sinov',
     price: 0,
     priceUzs: 0,
     priceUsd: 0,
-    duration: 30, // kun - 30 kun sinov
+    duration: 30,
     limits: {
-      students: 20,
-      teachers: 3,
-      groups: 5,
-      admins: 1,
+      students: -1,  // cheksiz sinov davrida
+      teachers: -1,
+      groups:   -1,
+      admins:   -1,
     },
     features: {
-      smsNotifications: false,
-      telegramNotifications: false,
-      fullReports: false,
-      prioritySupport: false,
+      telegramNotifications: true,
+      fullReports:           true,
+      aiQuiz:                true,
+      prioritySupport:       true,
     },
-    color: 'yellow',
-    icon: 'Clock',
+    color: 'amber',
+    icon: 'Crown',
+    badge: 'VIP',
     popular: false,
   },
-  
+
+  // 99,000 so'm/oy
   basic: {
     name: 'Basic',
     nameUz: 'Asosiy',
-    price: 165000, // so'm
-    priceUzs: 165000,
-    priceUsd: 13,
-    duration: 30, // kun
+    price: 99000,
+    priceUzs: 99000,
+    priceUsd: 8,
+    duration: 30,
     limits: {
       students: 100,
       teachers: 10,
-      groups: 25,
-      admins: 3,
+      groups:   20,
+      admins:   2,
     },
     features: {
-      smsNotifications: false,
-      telegramNotifications: true,
-      fullReports: true,
-      prioritySupport: false,
+      telegramNotifications: false,
+      fullReports:           true,
+      aiQuiz:                false,
+      prioritySupport:       false,
     },
     color: 'blue',
     icon: 'Zap',
+    badge: null,
     popular: true,
   },
-  
+
+  // 199,000 so'm/oy
   pro: {
     name: 'Pro',
     nameUz: 'Professional',
-    price: 320000, // so'm
-    priceUzs: 320000,
-    priceUsd: 25,
+    price: 199000,
+    priceUzs: 199000,
+    priceUsd: 16,
     duration: 30,
     limits: {
-      students: 500,
-      teachers: 50,
-      groups: 100,
-      admins: 10,
+      students: -1,
+      teachers: -1,
+      groups:   -1,
+      admins:   -1,
     },
     features: {
-      smsNotifications: true,
       telegramNotifications: true,
-      fullReports: true,
-      prioritySupport: true,
+      fullReports:           true,
+      aiQuiz:                true,
+      prioritySupport:       true,
     },
     color: 'purple',
     icon: 'Crown',
-    popular: false,
-  },
-  
-  enterprise: {
-    name: 'Enterprise',
-    nameUz: 'Korporativ',
-    price: 1270000, // so'm
-    priceUzs: 1270000,
-    priceUsd: 100,
-    duration: 30,
-    limits: {
-      students: -1, // -1 = cheksiz
-      teachers: -1,
-      groups: -1,
-      admins: -1,
-    },
-    features: {
-      smsNotifications: true,
-      telegramNotifications: true,
-      fullReports: true,
-      prioritySupport: true,
-    },
-    color: 'emerald',
-    icon: 'Shield',
+    badge: 'Eng yaxshi',
     popular: false,
   },
 };
 
-// Qo'shimcha xizmatlar (add-ons)
-export const ADDON_SERVICES = {
-  sms: {
-    name: 'SMS xabarnomalar',
-    nameUz: 'SMS xabarnomalar',
-    description: "Ota-onalarga avtomatik SMS yuborish",
-    price: 180000, // so'm/oy
-    priceUzs: 180000,
-    priceUsd: 14,
-    icon: 'MessageSquare',
-    availableFor: ['basic', 'pro', 'enterprise'], // Qaysi tariflarga qo'shish mumkin
-  },
-  telegram: {
-    name: 'Telegram bot',
-    nameUz: 'Telegram bot',
-    description: "Telegram orqali xabarnomalar va ma'lumot olish",
-    price: 100000,
-    priceUzs: 100000,
-    priceUsd: 8,
-    icon: 'Send',
-    availableFor: ['trial', 'basic', 'pro', 'enterprise'],
-  },
-  extraStudents50: {
-    name: "+50 o'quvchi",
-    nameUz: "+50 o'quvchi limiti",
-    description: "O'quvchilar limitini 50 taga oshirish",
-    price: 50000,
-    priceUzs: 50000,
-    priceUsd: 4,
-    icon: 'Users',
-    availableFor: ['basic', 'pro'],
-  },
-  extraStudents100: {
-    name: "+100 o'quvchi",
-    nameUz: "+100 o'quvchi limiti",
-    description: "O'quvchilar limitini 100 taga oshirish",
-    price: 80000,
-    priceUzs: 80000,
-    priceUsd: 6,
-    icon: 'Users',
-    availableFor: ['basic', 'pro'],
-  },
-  prioritySupport: {
-    name: 'Tezkor yordam',
-    nameUz: 'Tezkor yordam',
-    description: "24/7 telefon va chat orqali yordam",
-    price: 100000,
-    priceUzs: 100000,
-    priceUsd: 8,
-    icon: 'Headphones',
-    availableFor: ['basic', 'pro'],
-  },
-  whiteLabel: {
-    name: "O'z brending",
-    nameUz: "O'z brending",
-    description: "Logo va ranglarni o'zgartirish imkoniyati",
-    price: 250000,
-    priceUzs: 250000,
-    priceUsd: 20,
-    icon: 'Palette',
-    availableFor: ['pro', 'enterprise'],
-  },
-};
-
-// Markaz uchun jami narxni hisoblash
-export const calculateTotalPrice = (subscription, activeAddons = []) => {
-  const plan = SUBSCRIPTION_PLANS[subscription] || SUBSCRIPTION_PLANS.trial;
-  let total = plan.price;
-  
-  activeAddons.forEach(addonKey => {
-    const addon = ADDON_SERVICES[addonKey];
-    if (addon && addon.availableFor.includes(subscription)) {
-      total += addon.price;
-    }
-  });
-  
-  return total;
-};
-
-// Limit tekshirish funksiyasi
+// Limit tekshirish
 export const checkLimit = (subscription, limitType, currentCount) => {
   const plan = SUBSCRIPTION_PLANS[subscription] || SUBSCRIPTION_PLANS.trial;
   const limit = plan.limits[limitType];
-  
-  // -1 = cheksiz
-  if (limit === -1) {
-    return { allowed: true, limit: -1, current: currentCount, remaining: -1 };
-  }
-  
+  if (limit === -1) return { allowed: true, limit: -1, current: currentCount, remaining: -1 };
   const remaining = limit - currentCount;
   return {
     allowed: currentCount < limit,
@@ -205,31 +103,57 @@ export const hasFeature = (subscription, feature) => {
 export const getLimitMessage = (limitType, subscription) => {
   const plan = SUBSCRIPTION_PLANS[subscription] || SUBSCRIPTION_PLANS.trial;
   const limit = plan.limits[limitType];
-  
   const typeNames = {
     students: "o'quvchilar",
     teachers: "o'qituvchilar",
-    groups: "guruhlar",
-    admins: "adminlar",
+    groups:   "guruhlar",
+    admins:   "adminlar",
   };
-  
+  if (limit === -1) return '';
   return `${plan.nameUz} tarifida ${limit} ta ${typeNames[limitType]} cheklovi mavjud. Limitni oshirish uchun tarifni yangilang.`;
 };
 
 // Narxni formatlash
 export const formatPrice = (plan) => {
-  if (plan.price === 0) return 'Bepul';
+  if (plan.price === 0) return 'Bepul (30 kun)';
   return `${plan.priceUzs.toLocaleString()} so'm/oy`;
 };
 
-// Tarif taqqoslash uchun
+// Tarif taqqoslash ro'yxati
 export const PLAN_FEATURES_LIST = [
-  { key: 'students', label: "O'quvchilar soni", type: 'limit' },
-  { key: 'teachers', label: "O'qituvchilar soni", type: 'limit' },
-  { key: 'groups', label: 'Guruhlar soni', type: 'limit' },
-  { key: 'admins', label: 'Adminlar soni', type: 'limit' },
-  { key: 'fullReports', label: "To'liq hisobotlar", type: 'boolean' },
+  { key: 'students',              label: "O'quvchilar",         type: 'limit' },
+  { key: 'teachers',              label: "O'qituvchilar",        type: 'limit' },
+  { key: 'groups',                label: 'Guruhlar',             type: 'limit' },
+  { key: 'admins',                label: 'Adminlar',             type: 'limit' },
   { key: 'telegramNotifications', label: 'Telegram xabarnomalar', type: 'boolean' },
-  { key: 'smsNotifications', label: 'SMS xabarnomalar', type: 'boolean' },
-  { key: 'prioritySupport', label: 'Tezkor yordam', type: 'boolean' },
+  { key: 'fullReports',           label: "To'liq hisobotlar",    type: 'boolean' },
+  { key: 'aiQuiz',                label: 'AI test yaratish',     type: 'boolean' },
+  { key: 'prioritySupport',       label: 'Tezkor yordam',        type: 'boolean' },
 ];
+
+// Sinov muddati tugaganmi
+export const isTrialExpired = (center) => {
+  if (center?.subscription !== 'trial') return false;
+  const trialEndsAt = center?.trialEndsAt;
+  if (!trialEndsAt) return false;
+  const endDate = trialEndsAt?.toDate ? trialEndsAt.toDate() : new Date(trialEndsAt);
+  return new Date() > endDate;
+};
+
+// Sinov muddati qolgan kunlar
+export const trialDaysLeft = (center) => {
+  if (center?.subscription !== 'trial') return null;
+  const trialEndsAt = center?.trialEndsAt;
+  if (!trialEndsAt) return null;
+  const endDate = trialEndsAt?.toDate ? trialEndsAt.toDate() : new Date(trialEndsAt);
+  const diff = endDate - new Date();
+  return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+};
+
+// Eski kodni qo'llab-quvvatlash uchun
+export const calculateTotalPrice = (subscription) => {
+  const plan = SUBSCRIPTION_PLANS[subscription] || SUBSCRIPTION_PLANS.trial;
+  return plan.price;
+};
+
+export const ADDON_SERVICES = {};

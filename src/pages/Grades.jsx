@@ -6,6 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
 import { formatDate } from '../utils/helpers';
 import { toast } from 'react-toastify';
+import { captureError } from '../services/sentry';
 
 const Grades = () => {
   const { userData, role } = useAuth();
@@ -137,14 +138,18 @@ const Grades = () => {
       if (groupsData.length === 1) {
         setSelectedGroup(groupsData[0].id);
       }
-    } catch (err) { console.error(err); }
-    finally { setLoading(false); }
+    } catch (err) {
+      captureError(err, { context: 'fetchGroups' });
+      toast.error("Guruhlar yuklanmadi. Sahifani yangilang.", { toastId: 'grades-load-error' });
+    } finally { setLoading(false); }
   };
 
   const fetchGradesAndStudents = async () => {
     try {
       const [gradesData, studentsData] = await Promise.all([
-        gradesAPI.getByGroup(selectedGroup),
+        (isStudentOrParent && studentData)
+          ? gradesAPI.getByStudent(studentData.id)
+          : gradesAPI.getByGroup(selectedGroup),
         studentsAPI.getByGroup(selectedGroup)
       ]);
       
@@ -159,7 +164,10 @@ const Grades = () => {
         setGrades(gradesData);
       }
       setStudents(studentsData);
-    } catch (err) { console.error('fetchGradesAndStudents error:', err); }
+    } catch (err) {
+      captureError(err, { context: 'fetchGradesAndStudents' });
+      toast.error("Baholar yuklanmadi. Sahifani yangilang.", { toastId: 'grades-load-error' });
+    }
   };
 
   const handleTypeChange = (type) => {
@@ -293,8 +301,8 @@ const Grades = () => {
             label="Guruh" 
             value={selectedGroup} 
             onChange={(e) => setSelectedGroup(e.target.value)} 
-            options={groups.map(g => ({ value: g.id, label: g.name }))} 
-            placeholder="Guruhni tanlang" 
+            options={groups.filter(g => g.status !== 'graduated').map(g => ({ value: g.id, label: g.name }))}
+            placeholder="Guruhni tanlang"
           />
           <Input 
             label="Sana bo'yicha filter" 

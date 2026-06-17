@@ -4,116 +4,120 @@ import {
   LayoutDashboard, Users, GraduationCap, UsersRound, UserPlus, CreditCard,
   CalendarCheck, MessageSquare, BarChart3, Settings, LogOut, Menu, X,
   Bell, Search, ChevronDown, FileText, Send, Shield, Calendar, Star, AlertTriangle,
-  BookOpen, FileQuestion, Download, Trophy, Video, Gift, Award, Activity
+  BookOpen, FileQuestion, Download, Trophy, Video, Gift, Award, Activity, TrendingDown
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { ROLES, ROLE_NAMES } from '../../utils/constants';
 import { Avatar } from '../common';
 import { messagesAPI, teachersAPI, studentsAPI, paymentsAPI } from '../../services/api';
 import MobileNav from './MobileNav';
+import InstallPrompt from '../common/InstallPrompt';
 import { requestNotificationPermission } from '../../services/notifications';
 import { useTheme } from '../../contexts/ThemeContext';
 import { Moon, Sun } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { trialDaysLeft, isTrialExpired } from '../../utils/subscriptions';
 
 const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }) => {
   const { userData, role, signOut } = useAuth();
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   const getMenuItems = () => {
     const items = [
-      { id: 'dashboard', label: 'Bosh sahifa', icon: LayoutDashboard, path: '/dashboard' },
+      { id: 'dashboard', label: t('nav.dashboard'), icon: LayoutDashboard, path: '/dashboard' },
     ];
 
-    // Direktor uchun
+    const n = (key) => t(`nav.${key}`);
+
     if (role === ROLES.DIRECTOR) {
       items.push(
-        { id: 'admins', label: 'Adminlar', icon: Shield, path: '/admins' },
-        { id: 'students', label: "O'quvchilar", icon: Users, path: '/students' },
-        { id: 'teachers', label: "O'qituvchilar", icon: GraduationCap, path: '/teachers' },
-        { id: 'groups', label: 'Guruhlar', icon: UsersRound, path: '/groups' },
-        { id: 'schedule', label: 'Dars jadvali', icon: Calendar, path: '/schedule' },
-        { id: 'leads', label: 'Lidlar', icon: UserPlus, path: '/leads' },
-        { id: 'payments', label: "To'lovlar", icon: CreditCard, path: '/payments' },
-        { id: 'attendance', label: 'Davomat', icon: CalendarCheck, path: '/attendance' },
-        { id: 'grades', label: 'Baholar', icon: FileText, path: '/grades' },
-        { id: 'homework', label: 'Uy vazifalari', icon: BookOpen, path: '/homework' },
-        { id: 'quizzes', label: 'Online testlar', icon: FileQuestion, path: '/quizzes' },
-        { id: 'materials', label: 'Materiallar', icon: Video, path: '/materials' },
-        { id: 'leaderboard', label: 'Reyting', icon: Trophy, path: '/leaderboard' },
-        { id: 'rewards', label: "Sovg'alar", icon: Gift, path: '/rewards' },
-        { id: 'certificates', label: 'Sertifikatlar', icon: Award, path: '/certificates' },
-        { id: 'chat', label: 'Guruh chat', icon: Send, path: '/chat' },
-        { id: 'pdf-reports', label: 'PDF Hisobotlar', icon: Download, path: '/pdf-reports' },
-        { id: 'teacher-ratings', label: "O'qituvchi baholari", icon: Star, path: '/teacher-ratings' },
-        { id: 'messages', label: 'Xabarlar', icon: MessageSquare, path: '/messages', badge: unreadCount },
-        { id: 'reports', label: 'Statistika', icon: BarChart3, path: '/reports' },
-        { id: 'activity-log', label: 'Faoliyat tarixi', icon: Activity, path: '/activity-log' },
+        { id: 'admins',          label: n('admins'),         icon: Shield,        path: '/admins' },
+        { id: 'students',        label: n('students'),        icon: Users,         path: '/students' },
+        { id: 'teachers',        label: n('teachers'),        icon: GraduationCap, path: '/teachers' },
+        { id: 'groups',          label: n('groups'),          icon: UsersRound,    path: '/groups' },
+        { id: 'schedule',        label: n('schedule'),        icon: Calendar,      path: '/schedule' },
+        { id: 'leads',           label: n('leads'),           icon: UserPlus,      path: '/leads' },
+        { id: 'payments',        label: n('payments'),        icon: CreditCard,    path: '/payments' },
+        { id: 'expenses',        label: n('expenses'),        icon: TrendingDown,  path: '/expenses' },
+        { id: 'attendance',      label: n('attendance'),      icon: CalendarCheck, path: '/attendance' },
+        { id: 'grades',          label: n('grades'),          icon: FileText,      path: '/grades' },
+        { id: 'homework',        label: n('homework'),        icon: BookOpen,      path: '/homework' },
+        { id: 'quizzes',         label: n('quizzes'),         icon: FileQuestion,  path: '/quizzes' },
+        { id: 'materials',       label: n('materials'),       icon: Video,         path: '/materials' },
+        { id: 'leaderboard',     label: n('leaderboard'),     icon: Trophy,        path: '/leaderboard' },
+        { id: 'rewards',         label: n('rewards'),         icon: Gift,          path: '/rewards' },
+        { id: 'certificates',    label: n('certificates'),    icon: Award,         path: '/certificates' },
+        { id: 'chat',            label: n('chat'),            icon: Send,          path: '/chat' },
+        { id: 'pdf-reports',     label: n('pdfReports'),      icon: Download,      path: '/pdf-reports' },
+        { id: 'teacher-ratings', label: n('teacherRatings'),  icon: Star,          path: '/teacher-ratings' },
+        { id: 'messages',        label: n('messages'),        icon: MessageSquare, path: '/messages', badge: unreadCount },
+        { id: 'reports',         label: n('reports'),         icon: BarChart3,     path: '/reports' },
+        { id: 'activity-log',    label: n('activityLog'),     icon: Activity,      path: '/activity-log' },
       );
     }
 
-    // Admin uchun
     if (role === ROLES.ADMIN) {
       items.push(
-        { id: 'students', label: "O'quvchilar", icon: Users, path: '/students' },
-        { id: 'teachers', label: "O'qituvchilar", icon: GraduationCap, path: '/teachers' },
-        { id: 'groups', label: 'Guruhlar', icon: UsersRound, path: '/groups' },
-        { id: 'schedule', label: 'Dars jadvali', icon: Calendar, path: '/schedule' },
-        { id: 'leads', label: 'Lidlar', icon: UserPlus, path: '/leads' },
-        { id: 'payments', label: "To'lovlar", icon: CreditCard, path: '/payments' },
-        { id: 'attendance', label: 'Davomat', icon: CalendarCheck, path: '/attendance' },
-        { id: 'grades', label: 'Baholar', icon: FileText, path: '/grades' },
-        { id: 'homework', label: 'Uy vazifalari', icon: BookOpen, path: '/homework' },
-        { id: 'quizzes', label: 'Online testlar', icon: FileQuestion, path: '/quizzes' },
-        { id: 'materials', label: 'Materiallar', icon: Video, path: '/materials' },
-        { id: 'leaderboard', label: 'Reyting', icon: Trophy, path: '/leaderboard' },
-        { id: 'rewards', label: "Sovg'alar", icon: Gift, path: '/rewards' },
-        { id: 'certificates', label: 'Sertifikatlar', icon: Award, path: '/certificates' },
-        { id: 'chat', label: 'Guruh chat', icon: Send, path: '/chat' },
-        { id: 'pdf-reports', label: 'PDF Hisobotlar', icon: Download, path: '/pdf-reports' },
-        { id: 'teacher-ratings', label: "O'qituvchi baholari", icon: Star, path: '/teacher-ratings' },
-        { id: 'messages', label: 'Xabarlar', icon: MessageSquare, path: '/messages', badge: unreadCount },
-        { id: 'reports', label: 'Statistika', icon: BarChart3, path: '/reports' },
+        { id: 'students',        label: n('students'),        icon: Users,         path: '/students' },
+        { id: 'teachers',        label: n('teachers'),        icon: GraduationCap, path: '/teachers' },
+        { id: 'groups',          label: n('groups'),          icon: UsersRound,    path: '/groups' },
+        { id: 'schedule',        label: n('schedule'),        icon: Calendar,      path: '/schedule' },
+        { id: 'leads',           label: n('leads'),           icon: UserPlus,      path: '/leads' },
+        { id: 'payments',        label: n('payments'),        icon: CreditCard,    path: '/payments' },
+        { id: 'expenses',        label: n('expenses'),        icon: TrendingDown,  path: '/expenses' },
+        { id: 'attendance',      label: n('attendance'),      icon: CalendarCheck, path: '/attendance' },
+        { id: 'grades',          label: n('grades'),          icon: FileText,      path: '/grades' },
+        { id: 'homework',        label: n('homework'),        icon: BookOpen,      path: '/homework' },
+        { id: 'quizzes',         label: n('quizzes'),         icon: FileQuestion,  path: '/quizzes' },
+        { id: 'materials',       label: n('materials'),       icon: Video,         path: '/materials' },
+        { id: 'leaderboard',     label: n('leaderboard'),     icon: Trophy,        path: '/leaderboard' },
+        { id: 'rewards',         label: n('rewards'),         icon: Gift,          path: '/rewards' },
+        { id: 'certificates',    label: n('certificates'),    icon: Award,         path: '/certificates' },
+        { id: 'chat',            label: n('chat'),            icon: Send,          path: '/chat' },
+        { id: 'pdf-reports',     label: n('pdfReports'),      icon: Download,      path: '/pdf-reports' },
+        { id: 'teacher-ratings', label: n('teacherRatings'),  icon: Star,          path: '/teacher-ratings' },
+        { id: 'messages',        label: n('messages'),        icon: MessageSquare, path: '/messages', badge: unreadCount },
+        { id: 'reports',         label: n('reports'),         icon: BarChart3,     path: '/reports' },
       );
     }
 
-    // O'qituvchi uchun
     if (role === ROLES.TEACHER) {
       items.push(
-        { id: 'groups', label: 'Guruhlar', icon: UsersRound, path: '/groups' },
-        { id: 'schedule', label: 'Dars jadvali', icon: Calendar, path: '/schedule' },
-        { id: 'attendance', label: 'Davomat', icon: CalendarCheck, path: '/attendance' },
-        { id: 'grades', label: 'Baholar', icon: FileText, path: '/grades' },
-        { id: 'homework', label: 'Uy vazifalari', icon: BookOpen, path: '/homework' },
-        { id: 'quizzes', label: 'Online testlar', icon: FileQuestion, path: '/quizzes' },
-        { id: 'materials', label: 'Materiallar', icon: Video, path: '/materials' },
-        { id: 'leaderboard', label: 'Reyting', icon: Trophy, path: '/leaderboard' },
-        { id: 'certificates', label: 'Sertifikatlar', icon: Award, path: '/certificates' },
-        { id: 'chat', label: 'Guruh chat', icon: Send, path: '/chat' },
-        { id: 'pdf-reports', label: 'PDF Hisobotlar', icon: Download, path: '/pdf-reports' },
-        { id: 'payments', label: "To'lovlar", icon: CreditCard, path: '/payments' },
-        { id: 'messages', label: 'Xabarlar', icon: MessageSquare, path: '/messages', badge: unreadCount },
+        { id: 'groups',          label: n('groups'),          icon: UsersRound,    path: '/groups' },
+        { id: 'schedule',        label: n('schedule'),        icon: Calendar,      path: '/schedule' },
+        { id: 'attendance',      label: n('attendance'),      icon: CalendarCheck, path: '/attendance' },
+        { id: 'grades',          label: n('grades'),          icon: FileText,      path: '/grades' },
+        { id: 'homework',        label: n('homework'),        icon: BookOpen,      path: '/homework' },
+        { id: 'quizzes',         label: n('quizzes'),         icon: FileQuestion,  path: '/quizzes' },
+        { id: 'materials',       label: n('materials'),       icon: Video,         path: '/materials' },
+        { id: 'leaderboard',     label: n('leaderboard'),     icon: Trophy,        path: '/leaderboard' },
+        { id: 'certificates',    label: n('certificates'),    icon: Award,         path: '/certificates' },
+        { id: 'chat',            label: n('chat'),            icon: Send,          path: '/chat' },
+        { id: 'pdf-reports',     label: n('pdfReports'),      icon: Download,      path: '/pdf-reports' },
+        { id: 'payments',        label: n('payments'),        icon: CreditCard,    path: '/payments' },
+        { id: 'messages',        label: n('messages'),        icon: MessageSquare, path: '/messages', badge: unreadCount },
       );
     }
 
-    // O'quvchi va Ota-ona uchun
     if (role === ROLES.STUDENT || role === ROLES.PARENT) {
       if (role === ROLES.PARENT) {
-        items.push({ id: 'parent', label: 'Farzandlarim', icon: Users, path: '/parent' });
+        items.push({ id: 'parent', label: n('parent'), icon: Users, path: '/parent' });
       }
       items.push(
-        { id: 'grades', label: 'Baholarim', icon: FileText, path: '/grades' },
-        { id: 'attendance', label: 'Davomatim', icon: CalendarCheck, path: '/attendance' },
-        { id: 'homework', label: 'Uy vazifalari', icon: BookOpen, path: '/homework' },
-        { id: 'quizzes', label: 'Online testlar', icon: FileQuestion, path: '/quizzes' },
-        { id: 'materials', label: 'Materiallar', icon: Video, path: '/materials' },
-        { id: 'leaderboard', label: 'Reyting', icon: Trophy, path: '/leaderboard' },
-        { id: 'rewards', label: "Sovg'alar", icon: Gift, path: '/rewards' },
-        { id: 'certificates', label: 'Sertifikatlarim', icon: Award, path: '/certificates' },
-        { id: 'chat', label: 'Guruh chat', icon: Send, path: '/chat' },
-        { id: 'schedule', label: 'Dars jadvali', icon: Calendar, path: '/schedule' },
-        { id: 'payments', label: "To'lovlarim", icon: CreditCard, path: '/payments' },
-        { id: 'teacher-ratings', label: "O'qituvchini baholash", icon: Star, path: '/teacher-ratings' },
-        { id: 'messages', label: 'Xabarlar', icon: MessageSquare, path: '/messages', badge: unreadCount },
+        { id: 'grades',          label: n('myGrades'),        icon: FileText,      path: '/grades' },
+        { id: 'attendance',      label: n('myAttendance'),    icon: CalendarCheck, path: '/attendance' },
+        { id: 'homework',        label: n('homework'),        icon: BookOpen,      path: '/homework' },
+        { id: 'quizzes',         label: n('quizzes'),         icon: FileQuestion,  path: '/quizzes' },
+        { id: 'materials',       label: n('materials'),       icon: Video,         path: '/materials' },
+        { id: 'leaderboard',     label: n('leaderboard'),     icon: Trophy,        path: '/leaderboard' },
+        { id: 'rewards',         label: n('rewards'),         icon: Gift,          path: '/rewards' },
+        { id: 'certificates',    label: n('certificates'),    icon: Award,         path: '/certificates' },
+        { id: 'chat',            label: n('chat'),            icon: Send,          path: '/chat' },
+        { id: 'schedule',        label: n('schedule'),        icon: Calendar,      path: '/schedule' },
+        { id: 'payments',        label: n('myPayments'),      icon: CreditCard,    path: '/payments' },
+        { id: 'teacher-ratings', label: n('myRatings'),       icon: Star,          path: '/teacher-ratings' },
+        { id: 'messages',        label: n('messages'),        icon: MessageSquare, path: '/messages', badge: unreadCount },
       );
     }
 
@@ -184,7 +188,7 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
             `}
           >
             <Settings className="w-5 h-5" />
-            {!collapsed && <span className="font-medium">Sozlamalar</span>}
+            {!collapsed && <span className="font-medium">{t('nav.settings')}</span>}
           </NavLink>
         )}
 
@@ -199,7 +203,7 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
           `}
         >
           <Users className="w-5 h-5" />
-          {!collapsed && <span className="font-medium">Profil</span>}
+          {!collapsed && <span className="font-medium">{t('nav.profile')}</span>}
         </NavLink>
 
         {/* User info */}
@@ -239,10 +243,17 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
   );
 };
 
+const LANGS = [
+  { code: 'uz', label: "O'z", flag: '🇺🇿' },
+  { code: 'ru', label: 'Ру', flag: '🇷🇺' },
+  { code: 'en', label: 'En', flag: '🇬🇧' },
+];
+
 const Header = ({ onMenuClick, unreadCount }) => {
   const { userData, centerData } = useAuth();
   const { isDark, toggleTheme } = useTheme();
   const navigate = useNavigate();
+  const { i18n } = useTranslation();
 
   return (
     <header className="h-16 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 lg:px-6">
@@ -255,11 +266,20 @@ const Header = ({ onMenuClick, unreadCount }) => {
         {centerData?.name && (
           <div className="hidden sm:block">
             <h2 className="font-semibold text-gray-900">{centerData.name}</h2>
-            {centerData.subscription === 'trial' && (
-              <span className="text-xs text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full">
-                Sinov muddati
-              </span>
-            )}
+            {centerData.subscription === 'trial' && (() => {
+              const days = trialDaysLeft(centerData);
+              const expired = isTrialExpired(centerData);
+              if (expired) return (
+                <span className="text-xs text-red-600 bg-red-50 px-2 py-0.5 rounded-full font-medium">
+                  ⚠️ Sinov muddati tugadi
+                </span>
+              );
+              return (
+                <span className="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full font-medium">
+                  👑 VIP sinov — {days} kun qoldi
+                </span>
+              );
+            })()}
           </div>
         )}
         
@@ -273,12 +293,29 @@ const Header = ({ onMenuClick, unreadCount }) => {
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2">
+        {/* Til tanlash */}
+        <div className="flex items-center gap-0.5 bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5">
+          {LANGS.map(({ code, label, flag }) => (
+            <button
+              key={code}
+              onClick={() => i18n.changeLanguage(code)}
+              className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+                i18n.language === code
+                  ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
+              }`}
+              title={flag}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
         {/* Dark mode toggle */}
         <button
           onClick={toggleTheme}
           className="p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-          title={isDark ? "Yorug' rejim" : "Qoʻngʻir rejim"}
         >
           {isDark ? <Sun className="w-5 h-5 text-yellow-400" /> : <Moon className="w-5 h-5" />}
         </button>
@@ -307,7 +344,7 @@ const Header = ({ onMenuClick, unreadCount }) => {
 };
 
 const DashboardLayout = () => {
-  const { userData, role } = useAuth();
+  const { userData, role, centerId, centerData } = useAuth();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -320,88 +357,77 @@ const DashboardLayout = () => {
     const checkPaymentStatus = async () => {
       if (!userData?.id || (role !== ROLES.STUDENT && role !== ROLES.PARENT)) return;
       if (alertDismissed) return;
-      
+
       try {
-        const students = await studentsAPI.getAll();
-        const payments = await paymentsAPI.getAll();
-        
-        // Foydalanuvchiga tegishli o'quvchilarni topish
         const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
         const userPhone = normalizePhone(userData?.phone);
         const userEmail = userData?.email?.toLowerCase();
-        
+        const childIds = userData?.childIds || (userData?.childId ? [userData.childId] : []);
+
+        // O'quvchilarni topish
         let myStudents = [];
-        
-        if (role === ROLES.PARENT) {
-          const childIds = userData?.childIds || (userData?.childId ? [userData.childId] : []);
-          myStudents = students.filter(s => {
-            const studentParentPhone = normalizePhone(s.parentPhone);
-            return s.parentPhone === userData?.phone ||
-                   studentParentPhone === userPhone ||
-                   childIds.includes(s.id);
-          });
+        if (role === ROLES.PARENT && childIds.length > 0) {
+          const fetched = await Promise.all(childIds.map(id => studentsAPI.getById(id)));
+          myStudents = fetched.filter(Boolean);
         } else {
-          // O'quvchi
-          const student = students.find(s => {
-            const studentPhone = normalizePhone(s.phone);
-            const studentEmail = s.email?.toLowerCase();
-            return studentEmail === userEmail ||
-                   s.phone === userData?.phone ||
-                   studentPhone === userPhone;
-          });
-          if (student) myStudents = [student];
+          const allStudents = await studentsAPI.getAll();
+          if (role === ROLES.PARENT) {
+            myStudents = allStudents.filter(s => {
+              const p = normalizePhone(s.parentPhone);
+              return p === userPhone || childIds.includes(s.id);
+            });
+          } else {
+            const s = allStudents.find(s =>
+              s.email?.toLowerCase() === userEmail || normalizePhone(s.phone) === userPhone
+            );
+            if (s) myStudents = [s];
+          }
         }
-        
+
         if (myStudents.length === 0) return;
-        
+
         const now = new Date();
-        const currentMonth = now.getMonth();
-        const currentYear = now.getFullYear();
-        const lastMonth = currentMonth === 0 ? 11 : currentMonth - 1;
-        const lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
-        
-        // To'lov holatini tekshirish
-        const hasPaymentForMonth = (studentId, year, month) => {
-          const monthStr = `${year}-${String(month + 1).padStart(2, '0')}`;
-          return payments.some(p => 
-            p.studentId === studentId && 
-            p.status === 'paid' && 
-            p.month === monthStr
-          );
-        };
-        
-        let hasDebt = false;
-        let hasPending = false;
+        const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
         let debtStudents = [];
         let pendingStudents = [];
-        
+
         for (const student of myStudents) {
-          const startDate = student.startDate ? new Date(student.startDate) : null;
-          const startedThisMonth = startDate && 
-            startDate.getMonth() === currentMonth && 
-            startDate.getFullYear() === currentYear;
-          
-          const hasPaidCurrent = hasPaymentForMonth(student.id, currentYear, currentMonth);
-          const hasPaidLast = hasPaymentForMonth(student.id, lastMonthYear, lastMonth);
-          
-          if (!hasPaidCurrent) {
-            if (!startedThisMonth && !hasPaidLast) {
-              hasDebt = true;
+          if (student.isFree) continue;
+
+          // monthly_bills dan joriy oy holatini olish
+          const bills = await paymentsAPI.getMonthlyBillsByStudent(student.id);
+          const currentBill = bills.find(b => b.month === currentMonthStr);
+
+          if (!currentBill) {
+            // Bill yo'q — faqat agar student shu oyda boshlamagan bo'lsa ogohlantir
+            const startDate = student.startDate ? new Date(student.startDate) : null;
+            const startMonth = startDate
+              ? `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}`
+              : null;
+            if (startMonth && startMonth < currentMonthStr) {
+              pendingStudents.push(student.fullName);
+            }
+          } else if (currentBill.status !== 'paid' && (currentBill.remainingAmount || 0) > 0) {
+            // O'tgan oylar qarzi ham bormi?
+            const pastDebt = bills
+              .filter(b => b.month < currentMonthStr && (b.remainingAmount || 0) > 0)
+              .reduce((s, b) => s + b.remainingAmount, 0);
+            if (pastDebt > 0) {
               debtStudents.push(student.fullName);
-            } else if (!startedThisMonth) {
-              hasPending = true;
+            } else {
               pendingStudents.push(student.fullName);
             }
           }
         }
-        
-        if (hasDebt) {
+
+        if (debtStudents.length > 0) {
           setPaymentAlert({
             type: 'danger',
             message: `⚠️ Qarzdorlik mavjud! ${debtStudents.join(', ')} uchun to'lov qilish kerak.`,
             action: () => navigate('/payments')
           });
-        } else if (hasPending) {
+        } else if (pendingStudents.length > 0) {
           setPaymentAlert({
             type: 'warning',
             message: `💰 Bu oy uchun to'lov qilish vaqti keldi: ${pendingStudents.join(', ')}`,
@@ -412,7 +438,7 @@ const DashboardLayout = () => {
         console.error('Payment check error:', err);
       }
     };
-    
+
     checkPaymentStatus();
   }, [userData, role, alertDismissed, navigate]);
 
@@ -426,7 +452,7 @@ const DashboardLayout = () => {
   // Xabarlarni tekshirish
   useEffect(() => {
     const checkUnreadMessages = async () => {
-      if (!userData?.id) return;
+      if (!userData?.id || !centerId) return;
       
       try {
         const allMessages = await messagesAPI.getAll();
@@ -536,12 +562,37 @@ const DashboardLayout = () => {
           </div>
         )}
         
-        <main className="p-4 lg:p-6 pb-24 md:pb-6">
+        {import.meta.env.VITE_APP_ENV === 'staging' && (
+          <div className="bg-amber-400 text-amber-900 text-center text-xs font-bold py-1 px-4">
+            ⚠️ STAGING MUHITI — Bu yerda qilingan o'zgarishlar test uchun
+          </div>
+        )}
+        {centerData && isTrialExpired(centerData) && (
+          <div className="mx-4 lg:mx-6 mt-4 p-4 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between gap-4">
+            <div>
+              <p className="font-semibold text-red-800">30 kunlik VIP sinov muddati tugadi</p>
+              <p className="text-sm text-red-600 mt-0.5">
+                Tizimdan foydalanishni davom ettirish uchun tarifni tanlang.
+                Asosiy: 99,000 so'm/oy · Pro: 249,000 so'm/oy
+              </p>
+            </div>
+            <a
+              href="https://t.me/Diyorbek7337"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-shrink-0 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition"
+            >
+              Tarifni tanlash
+            </a>
+          </div>
+        )}
+        <main className="p-4 lg:p-6 pb-24">
           <Outlet />
         </main>
       </div>
 
       <MobileNav unreadCount={unreadCount} />
+      <InstallPrompt />
     </div>
   );
 };

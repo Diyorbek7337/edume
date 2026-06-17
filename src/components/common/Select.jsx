@@ -15,6 +15,7 @@ const Select = forwardRef(({
     w-full px-4 py-3 rounded-xl border-2 transition-all duration-200
     focus:outline-none focus:ring-0
     appearance-none cursor-pointer
+    text-base md:text-sm
     dark:text-gray-100
     disabled:bg-gray-100 dark:disabled:bg-gray-700 disabled:cursor-not-allowed
   `;

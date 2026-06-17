@@ -13,28 +13,21 @@ const Modal = ({
   className = '',
 }) => {
   const overlayRef = useRef(null);
-  
+
   const sizes = {
-    sm: 'max-w-md',
-    md: 'max-w-lg',
-    lg: 'max-w-2xl',
-    xl: 'max-w-4xl',
-    full: 'max-w-[90vw]',
+    sm: 'md:max-w-md',
+    md: 'md:max-w-lg',
+    lg: 'md:max-w-2xl',
+    xl: 'md:max-w-4xl',
+    full: 'md:max-w-[90vw]',
   };
 
   useEffect(() => {
     const handleEscape = (e) => {
-      if (e.key === 'Escape' && isOpen) {
-        onClose();
-      }
+      if (e.key === 'Escape' && isOpen) onClose();
     };
-
     document.addEventListener('keydown', handleEscape);
-    
-    if (isOpen) {
-      document.body.style.overflow = 'hidden';
-    }
-
+    if (isOpen) document.body.style.overflow = 'hidden';
     return () => {
       document.removeEventListener('keydown', handleEscape);
       document.body.style.overflow = 'unset';
@@ -42,9 +35,7 @@ const Modal = ({
   }, [isOpen, onClose]);
 
   const handleOverlayClick = (e) => {
-    if (closeOnOverlay && e.target === overlayRef.current) {
-      onClose();
-    }
+    if (closeOnOverlay && e.target === overlayRef.current) onClose();
   };
 
   if (!isOpen) return null;
@@ -53,29 +44,37 @@ const Modal = ({
     <div
       ref={overlayRef}
       onClick={handleOverlayClick}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in"
+      className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:p-4 bg-black/50 backdrop-blur-sm animate-fade-in"
     >
       <div
         className={`
-          ${sizes[size]}
-          w-full bg-white dark:bg-gray-800 rounded-2xl shadow-2xl
-          transform transition-all duration-300
+          w-full ${sizes[size]}
+          bg-white dark:bg-gray-800
+          rounded-t-2xl md:rounded-2xl
+          shadow-2xl
+          max-h-[92vh] md:max-h-[90vh]
+          flex flex-col
           animate-slide-up
           ${className}
         `}
       >
+        {/* Drag handle — mobilda */}
+        <div className="flex justify-center pt-3 pb-1 md:hidden">
+          <div className="w-10 h-1 bg-gray-300 dark:bg-gray-600 rounded-full" />
+        </div>
+
         {/* Header */}
         {(title || showCloseButton) && (
-          <div className="flex items-center justify-between p-6 border-b border-gray-100 dark:border-gray-700">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex-shrink-0">
             {title && (
-              <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 font-display">
+              <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100">
                 {title}
               </h2>
             )}
             {showCloseButton && (
               <button
                 onClick={onClose}
-                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl transition-colors"
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl transition-colors ml-auto"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -83,8 +82,8 @@ const Modal = ({
           </div>
         )}
 
-        {/* Content */}
-        <div className="p-6">
+        {/* Content — scrollable */}
+        <div className="p-5 overflow-y-auto flex-1">
           {children}
         </div>
       </div>

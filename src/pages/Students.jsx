@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Edit, Trash2, Eye, Download, Upload, Copy, Check, Gift, AlertTriangle, FileSpreadsheet, GraduationCap, Send, CheckSquare, Square, Users, X, ChevronDown } from 'lucide-react';
+import { Search, Plus, Edit, Trash2, Eye, Download, Upload, Copy, Check, Gift, AlertTriangle, FileSpreadsheet, GraduationCap, Send, CheckSquare, Square, Users, X, ChevronDown, Archive, ArchiveRestore, KeyRound } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Avatar, Table, Modal, Loading, EmptyState } from '../components/common';
-import { studentsAPI, groupsAPI, usersAPI, settingsAPI } from '../services/api';
+import { studentsAPI, groupsAPI, usersAPI, settingsAPI, paymentsAPI, attendanceAPI, gradesAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
 import { formatPhone, formatMoney } from '../utils/helpers';
@@ -12,6 +12,7 @@ import { toast } from 'react-toastify';
 import * as XLSX from 'xlsx';
 import { activityLogAPI, LOG_ACTIONS } from '../services/activityLog';
 import { buildDeepLink } from '../services/telegram';
+import { auth } from '../services/firebase';
 
 const Students = () => {
   const { userData, role, centerData } = useAuth();
@@ -27,24 +28,31 @@ const Students = () => {
   const [showViewModal, setShowViewModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteReason, setDeleteReason] = useState('');
   const [showCredentialsModal, setShowCredentialsModal] = useState(false);
   const [showLimitModal, setShowLimitModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showGraduateModal, setShowGraduateModal] = useState(false);
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
   const [importData, setImportData] = useState([]);
   const [importLoading, setImportLoading] = useState(false);
   
   const [selectedStudent, setSelectedStudent] = useState(null);
-  const [formData, setFormData] = useState({
-    fullName: '', phone: '', email: '', groupId: '',
-    parentName: '', parentPhone: '', parentTelegram: '', address: '',
-    birthDate: '',
-    startDate: new Date().toISOString().split('T')[0],
-    paymentType: 'prorated',
-    paymentDay: '1',
-    referredBy: '',
-    discount: '0',
-    isFree: false
+  const [formData, setFormData] = useState(() => {
+    const today = new Date();
+    return {
+      fullName: '', phone: '', email: '', groupId: '',
+      telegramPhone: '',
+      parentName: '', parentPhone: '', parentTelegram: '', address: '',
+      birthDate: '',
+      startDate: today.toISOString().split('T')[0],
+      paymentType: 'prorated',
+      paymentDay: String(today.getDate()), // Boshlash sanasi kunidan avtomatik
+      referredBy: '',
+      discount: '0',
+      isFree: false
+    };
   });
   const [credentials, setCredentials] = useState({ studentEmail: '', studentPassword: '', parentEmail: '', parentPassword: '' });
   const [formLoading, setFormLoading] = useState(false);
@@ -113,9 +121,11 @@ const Students = () => {
     // Status bo'yicha filter
     let matchesStatus = true;
     if (filterStatus === 'active') {
-      matchesStatus = s.status === 'active';
+      matchesStatus = s.status === 'active' || !s.status;
     } else if (filterStatus === 'graduated') {
       matchesStatus = s.status === 'graduated';
+    } else if (filterStatus === 'archived') {
+      matchesStatus = s.status === 'archived';
     }
     // 'all' bo'lsa hamma ko'rsatiladi
 
@@ -194,18 +204,20 @@ const Students = () => {
   };
 
   const resetForm = () => {
+    const today = new Date();
     setFormData({
       fullName: '',
       phone: '',
       email: '',
       groupId: '',
+      telegramPhone: '',
       parentName: '',
       parentPhone: '',
       parentTelegram: '',
       address: '',
       birthDate: '',
-      startDate: new Date().toISOString().split('T')[0],
-      paymentDay: '1',
+      startDate: today.toISOString().split('T')[0],
+      paymentDay: String(today.getDate()), // Boshlash sanasi kunidan avtomatik
       paymentType: 'full_month',
       referredBy: '',
       discount: '0',
@@ -219,6 +231,68 @@ const Students = () => {
   const generatePassword = () => {
     const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  };
+
+  const handleResetPassword = async () => {
+    if (!selectedStudent) return;
+    setResetLoading(true);
+    try {
+      const project = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+      const idToken = await auth.currentUser?.getIdToken();
+      const resetUrl = `https://us-central1-${project}.cloudfunctions.net/resetUserPassword`;
+
+      const studentEmail = selectedStudent.email || `${selectedStudent.phone?.replace(/\D/g, '')}@student.edu`;
+      const newStudentPassword = generatePassword();
+
+      // O'quvchi parolini tiklash
+      const res = await fetch(resetUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
+        body: JSON.stringify({
+          email: studentEmail,
+          newPassword: newStudentPassword,
+          parentTelegramChatId: selectedStudent.parentTelegramChatId || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Xatolik');
+
+      if (data.uid) {
+        await usersAPI.upsertById(data.uid, { mustChangePassword: true });
+      }
+
+      // Ota-ona parolini tiklash (agar telefon bo'lsa)
+      let newParentPassword = '';
+      let parentEmail = '';
+      if (selectedStudent.parentPhone) {
+        const cleanParentPhone = selectedStudent.parentPhone.replace(/\D/g, '');
+        parentEmail = `${cleanParentPhone}@parent.edu`;
+        newParentPassword = generatePassword();
+        try {
+          const pRes = await fetch(resetUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
+            body: JSON.stringify({
+              email: parentEmail,
+              newPassword: newParentPassword,
+              parentTelegramChatId: selectedStudent.parentTelegramChatId || null,
+            }),
+          });
+          if (!pRes.ok) newParentPassword = ''; // Ota-ona akkaunti yo'q bo'lishi mumkin
+        } catch {
+          newParentPassword = '';
+        }
+      }
+
+      setShowResetModal(false);
+      setCredentials({ studentEmail, studentPassword: newStudentPassword, parentEmail, parentPassword: newParentPassword });
+      setShowCredentialsModal(true);
+      const tgSent = selectedStudent.parentTelegramChatId ? " va Telegramga yuborildi" : "";
+      toast.success(`Parol yangilandi${tgSent}`);
+    } catch (err) {
+      toast.error(err.message || "Parol yangilashda xatolik");
+    }
+    setResetLoading(false);
   };
 
   const updateGroupStudentsCount = async (groupId, increment = true) => {
@@ -249,34 +323,59 @@ const Students = () => {
       const studentPassword = generatePassword();
       
       // 1. O'quvchi Firebase Auth yaratish
-      // Agar eski akkaunt mavjud bo'lsa (qayta qo'shilayotgan o'quvchi), davom etamiz
+      let studentUserId = null;
       try {
-        await usersAPI.create({
+        const created = await usersAPI.create({
           fullName: formData.fullName,
           email: studentEmail,
           phone: formData.phone,
-          role: ROLES.STUDENT
+          role: ROLES.STUDENT,
+          mustChangePassword: true,
         }, studentPassword);
+        studentUserId = created?.id || null;
       } catch (authErr) {
         if (authErr.code === 'auth/email-already-in-use') {
-          // Firebase Auth akkaunt mavjud — faqat Firestore users doc ni yangilaymiz
-          const existingUsers = await usersAPI.getAll();
-          const existingUser = existingUsers.find(u => u.email === studentEmail);
-          if (!existingUser) {
-            // Firestore doc yo'q, lekin Auth bor — yangi doc yaratib ketamiz
-            // (ID mismatch bo'ladi, lekin tizim ishlaydi)
+          // Firebase Auth akkaunt mavjud — Admin SDK orqali parolni yangilaymiz
+          try {
+            const project = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+            const idToken = await auth.currentUser?.getIdToken();
+            const resetRes = await fetch(
+              `https://us-central1-${project}.cloudfunctions.net/resetUserPassword`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${idToken}`,
+                },
+                body: JSON.stringify({ email: studentEmail, newPassword: studentPassword }),
+              }
+            );
+            const resetData = await resetRes.json();
+            if (resetData.uid) {
+              studentUserId = resetData.uid;
+              await usersAPI.upsertById(resetData.uid, {
+                fullName: formData.fullName,
+                email: studentEmail,
+                phone: formData.phone,
+                role: ROLES.STUDENT,
+                mustChangePassword: true,
+                createdAt: new Date().toISOString(),
+              });
+            }
+          } catch (resetErr) {
+            console.error('Password reset error:', resetErr);
           }
-          // Davom etamiz — o'quvchi records yaratiladi
         } else {
           throw authErr;
         }
       }
-      
+
       // 2. Students kolleksiyasiga qo'shish
-      const newStudent = await studentsAPI.create({ 
-        ...formData, 
+      const newStudent = await studentsAPI.create({
+        ...formData,
         email: studentEmail,
-        groupName: group?.name || '', 
+        userId: studentUserId,        // Bot uchun kerak
+        groupName: group?.name || '',
         status: 'active',
         mustChangePassword: true,
         startDate: formData.startDate,
@@ -317,7 +416,7 @@ const Students = () => {
         // Telefon raqamdan faqat raqamlarni olish va email yaratish
         const cleanPhone = formData.parentPhone.replace(/\D/g, '');
         if (cleanPhone.length >= 9) {
-          parentEmail = `parent${cleanPhone}@edu.local`;
+          parentEmail = `${cleanPhone}@parent.edu`;
           
           try {
             // Avval mavjud ota-onani tekshirish
@@ -462,46 +561,63 @@ const Students = () => {
   };
 
   const handleDelete = async () => {
+    if (!deleteReason.trim()) {
+      toast.error("Iltimos, o'chirish sababini kiriting");
+      return;
+    }
     setFormLoading(true);
     try {
-      // Students kolleksiyasidan o'chirish
-      await studentsAPI.delete(selectedStudent.id);
-      
-      // Users kolleksiyasidan ham o'chirish (o'quvchi)
+      const studentId = selectedStudent.id;
+
+      // 1. Tegishli ma'lumotlarni cascade o'chirish
+      const [payments, bills, grades, attendance] = await Promise.all([
+        paymentsAPI.getByStudent(studentId),
+        paymentsAPI.getMonthlyBillsByStudent(studentId),
+        gradesAPI.getByStudent(studentId),
+        attendanceAPI.getByStudent(studentId),
+      ]);
+
+      await Promise.all([
+        ...payments.map(p => paymentsAPI.delete(p.id)),
+        ...bills.map(b => paymentsAPI.deleteMonthlyBill(b.id)),
+        ...grades.map(g => gradesAPI.delete(g.id)),
+        ...attendance.map(a => attendanceAPI.delete(a.id)),
+      ]);
+
+      // 2. Students kolleksiyasidan o'chirish
+      await studentsAPI.delete(studentId);
+
+      // 3. Users kolleksiyasidan ham o'chirish (o'quvchi)
       try {
         const allUsers = await usersAPI.getByRole(ROLES.STUDENT);
         const studentUser = allUsers.find(u => u.email === selectedStudent.email);
-        if (studentUser) {
-          await usersAPI.delete(studentUser.id);
-        }
+        if (studentUser) await usersAPI.delete(studentUser.id);
       } catch (err) { console.error("Delete warning:", err); }
-      
-      // Ota-ona profilini o'chirish
+
+      // 4. Ota-ona profilini o'chirish
       if (selectedStudent.parentPhone) {
         try {
           const cleanParentPhone = selectedStudent.parentPhone.replace(/\D/g, '');
-          const parentEmail = `parent${cleanParentPhone}@edu.local`;
           const allParents = await usersAPI.getByRole(ROLES.PARENT);
-          const parentUser = allParents.find(u => u.email === parentEmail || u.phone === selectedStudent.parentPhone);
-          if (parentUser) {
-            await usersAPI.delete(parentUser.id);
-          }
+          const parentUser = allParents.find(u => u.phone === selectedStudent.parentPhone || u.phone?.replace(/\D/g,'') === cleanParentPhone);
+          if (parentUser) await usersAPI.delete(parentUser.id);
         } catch (err) { console.error("Delete warning:", err); }
       }
-      
-      // Guruh studentsCount yangilash
+
+      // 5. Guruh studentsCount yangilash
       if (selectedStudent.groupId) {
         await updateGroupStudentsCount(selectedStudent.groupId, false);
       }
-      
-      setStudents(students.filter(s => s.id !== selectedStudent.id));
+
+      setStudents(students.filter(s => s.id !== studentId));
       setShowDeleteModal(false);
-      toast.success("O'quvchi o'chirildi");
+      toast.success("O'quvchi va barcha ma'lumotlari o'chirildi");
 
       activityLogAPI.log({
         action: LOG_ACTIONS.STUDENT_DELETED.key,
         entityType: 'student',
         entityName: selectedStudent.fullName,
+        details: { reason: deleteReason.trim() },
         performer: { id: userData?.id, fullName: userData?.fullName, role },
       });
     } catch (err) { 
@@ -509,6 +625,64 @@ const Students = () => {
       toast.error("O'chirishda xatolik"); 
     }
     finally { setFormLoading(false); }
+  };
+
+  // Arxivga o'tkazish
+  const handleArchive = async () => {
+    if (!deleteReason.trim()) {
+      toast.error("Iltimos, arxivga o'tkazish sababini kiriting");
+      return;
+    }
+    setFormLoading(true);
+    try {
+      await studentsAPI.update(selectedStudent.id, {
+        status: 'archived',
+        archivedAt: new Date().toISOString(),
+        archiveReason: deleteReason.trim(),
+        archivedBy: userData?.id,
+      });
+      setStudents(students.map(s =>
+        s.id === selectedStudent.id
+          ? { ...s, status: 'archived', archiveReason: deleteReason.trim() }
+          : s
+      ));
+      setShowDeleteModal(false);
+      toast.success("O'quvchi arxivga o'tkazildi");
+      activityLogAPI.log({
+        action: 'student_archived',
+        entityType: 'student',
+        entityName: selectedStudent.fullName,
+        details: { reason: deleteReason.trim() },
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error("Arxivga o'tkazishda xatolik");
+    } finally { setFormLoading(false); }
+  };
+
+  // Arxivdan tiklash
+  const handleRestore = async (student) => {
+    try {
+      await studentsAPI.update(student.id, {
+        status: 'active',
+        archivedAt: null,
+        archiveReason: null,
+        archivedBy: null,
+      });
+      setStudents(students.map(s =>
+        s.id === student.id ? { ...s, status: 'active', archiveReason: null } : s
+      ));
+      toast.success("O'quvchi faol holatga qaytarildi");
+      activityLogAPI.log({
+        action: 'student_restored',
+        entityType: 'student',
+        entityName: student.fullName,
+        performer: { id: userData?.id, fullName: userData?.fullName, role },
+      });
+    } catch (err) {
+      toast.error("Tiklashda xatolik");
+    }
   };
 
   // Kursni bitirdi - graduated statusiga o'tkazish
@@ -583,6 +757,7 @@ const Students = () => {
       phone: student.phone || '',
       email: student.email || '',
       groupId: student.groupId || '',
+      telegramPhone: student.telegramPhone || '',
       parentName: student.parentName || '',
       parentPhone: student.parentPhone || '',
       parentTelegram: student.parentTelegram || '',
@@ -756,6 +931,48 @@ const Students = () => {
     setImportLoading(false);
   };
 
+  // Mavjud o'quvchilarning paymentDay ni startDate dan avtomatik o'rnatish (migratsiya)
+  const handleMigratePaymentDays = async () => {
+    const needsMigration = activeStudents.filter(s => {
+      if (!s.startDate) return false;
+      const startDay = new Date(s.startDate + 'T00:00:00').getDate();
+      const currentPaymentDay = parseInt(s.paymentDay) || 1;
+      // paymentDay = 1 (default) va startDate kuni 1 emas bo'lsa — yangilash kerak
+      return currentPaymentDay === 1 && startDay !== 1;
+    });
+
+    if (needsMigration.length === 0) {
+      toast.info("Barcha o'quvchilarning to'lov sanasi allaqachon to'g'ri o'rnatilgan");
+      return;
+    }
+
+    if (!window.confirm(
+      `${needsMigration.length} ta o'quvchining to'lov sanasi boshlagan sanasiga qarab yangilanadi.\n\n` +
+      needsMigration.slice(0, 5).map(s => {
+        const day = new Date(s.startDate + 'T00:00:00').getDate();
+        return `• ${s.fullName}: ${day}-kun`;
+      }).join('\n') +
+      (needsMigration.length > 5 ? `\n... va ${needsMigration.length - 5} ta boshqa` : '') +
+      '\n\nDavom etasizmi?'
+    )) return;
+
+    try {
+      await Promise.all(needsMigration.map(s => {
+        const day = new Date(s.startDate + 'T00:00:00').getDate();
+        return studentsAPI.update(s.id, { paymentDay: Math.min(day, 28) });
+      }));
+      setStudents(prev => prev.map(s => {
+        const found = needsMigration.find(n => n.id === s.id);
+        if (!found) return s;
+        return { ...s, paymentDay: Math.min(new Date(s.startDate + 'T00:00:00').getDate(), 28) };
+      }));
+      toast.success(`${needsMigration.length} ta o'quvchining to'lov sanasi yangilandi!`);
+    } catch (err) {
+      console.error(err);
+      toast.error('Xatolik yuz berdi');
+    }
+  };
+
   if (loading) return <Loading fullScreen text="Yuklanmoqda..." />;
 
   // Handle add button click with limit check
@@ -830,8 +1047,15 @@ const Students = () => {
               >
                 Export
               </Button>
-              <Button 
-                icon={Plus} 
+              <Button
+                variant="outline"
+                onClick={handleMigratePaymentDays}
+                title="Mavjud o'quvchilarning to'lov sanasini boshlagan sanadan avtomatik o'rnatish"
+              >
+                To'lov sanasini yangilash
+              </Button>
+              <Button
+                icon={Plus}
                 onClick={handleAddClick}
                 disabled={!limitCheck.allowed}
                 className={!limitCheck.allowed ? 'opacity-50 cursor-not-allowed' : ''}
@@ -857,6 +1081,7 @@ const Students = () => {
           >
             <option value="active">Faol</option>
             <option value="graduated">Bitirganlar</option>
+            <option value="archived">Arxiv</option>
             <option value="all">Barchasi</option>
           </select>
         </div>
@@ -902,7 +1127,62 @@ const Students = () => {
       )}
 
       {filteredStudents.length > 0 ? (
-        <Card padding="p-0">
+        <>
+        {/* Mobile: Card ko'rinishi */}
+        <div className="md:hidden space-y-2">
+          {filteredStudents.map(student => (
+            <div
+              key={student.id}
+              className={`bg-white dark:bg-gray-800 rounded-xl border dark:border-gray-700 p-3 ${
+                selectedIds.has(student.id) ? 'border-primary-400 bg-primary-50 dark:bg-primary-900/20' : 'border-gray-200'
+              } ${student.status === 'graduated' ? 'opacity-75' : ''}`}
+            >
+              <div className="flex items-center gap-3">
+                {isAdmin && (
+                  <button onClick={() => toggleSelect(student.id)} className="flex-shrink-0">
+                    {selectedIds.has(student.id)
+                      ? <CheckSquare className="w-5 h-5 text-primary-600" />
+                      : <Square className="w-5 h-5 text-gray-400" />}
+                  </button>
+                )}
+                <Avatar name={student.fullName} />
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-gray-900 dark:text-gray-100 truncate">{student.fullName}</p>
+                  <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                    <Badge variant="primary" className="text-xs">{student.groupName || '—'}</Badge>
+                    {student.status === 'graduated'
+                      ? <Badge variant="default" className="bg-purple-100 text-purple-700 text-xs"><GraduationCap className="w-3 h-3 mr-0.5" />Bitirgan</Badge>
+                      : student.overLimit
+                        ? <Badge variant="danger" className="text-xs">Limit oshdi</Badge>
+                        : <Badge variant="success" className="text-xs">Faol</Badge>}
+                  </div>
+                </div>
+                {/* Action tugmalari */}
+                <div className="flex gap-1 flex-shrink-0">
+                  <button onClick={() => { setSelectedStudent(student); setShowViewModal(true); }} className="p-2 text-gray-400 hover:text-primary-600 rounded-lg"><Eye className="w-4 h-4" /></button>
+                  {isAdmin && student.status === 'active' && (
+                    <>
+                      <button onClick={() => openEditModal(student)} className="p-2 text-gray-400 hover:text-blue-600 rounded-lg"><Edit className="w-4 h-4" /></button>
+                      <button onClick={() => { setSelectedStudent(student); setShowResetModal(true); }} className="p-2 text-gray-400 hover:text-amber-600 rounded-lg"><KeyRound className="w-4 h-4" /></button>
+                    </>
+                  )}
+                  {isAdmin && (student.status === 'active' || !student.status) && (
+                    <button onClick={() => { setSelectedStudent(student); setDeleteReason(''); setShowDeleteModal(true); }} className="p-2 text-gray-400 hover:text-orange-600 rounded-lg"><Archive className="w-4 h-4" /></button>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-4 mt-2 ml-1">
+                <a href={`tel:${student.phone}`} className="text-sm text-primary-600">{formatPhone(student.phone)}</a>
+                {student.parentPhone && (
+                  <a href={`tel:${student.parentPhone}`} className="text-sm text-gray-500">{formatPhone(student.parentPhone)}</a>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Desktop: Jadval ko'rinishi */}
+        <Card padding="p-0" className="hidden md:block">
           <Table>
             <Table.Head>
               <Table.Row>
@@ -954,9 +1234,10 @@ const Students = () => {
                   <Table.Cell>
                     {student.status === 'graduated' ? (
                       <Badge variant="default" className="bg-purple-100 text-purple-700">
-                        <GraduationCap className="w-3 h-3 mr-1" />
-                        Bitirgan
+                        <GraduationCap className="w-3 h-3 mr-1" />Bitirgan
                       </Badge>
+                    ) : student.overLimit ? (
+                      <Badge variant="danger">Limit oshdi</Badge>
                     ) : (
                       <Badge variant="success">Faol</Badge>
                     )}
@@ -1001,8 +1282,15 @@ const Students = () => {
                       {isAdmin && student.status === 'active' && (
                         <>
                           <button onClick={() => openEditModal(student)} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg" title="Tahrirlash"><Edit className="w-4 h-4" /></button>
-                          <button 
-                            onClick={() => { setSelectedStudent(student); setShowGraduateModal(true); }} 
+                          <button
+                            onClick={() => { setSelectedStudent(student); setShowResetModal(true); }}
+                            className="p-2 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg"
+                            title="Parolni tiklash"
+                          >
+                            <KeyRound className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => { setSelectedStudent(student); setShowGraduateModal(true); }}
                             className="p-2 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded-lg"
                             title="Kursni bitirdi"
                           >
@@ -1011,16 +1299,40 @@ const Students = () => {
                         </>
                       )}
                       {isAdmin && student.status === 'graduated' && (
-                        <button 
-                          onClick={() => handleReactivate(student)} 
+                        <button
+                          onClick={() => handleReactivate(student)}
                           className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg"
                           title="Qayta faollashtirish"
                         >
                           <Check className="w-4 h-4" />
                         </button>
                       )}
-                      {isDirector && (
-                        <button onClick={() => { setSelectedStudent(student); setShowDeleteModal(true); }} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="O'chirish"><Trash2 className="w-4 h-4" /></button>
+                      {isAdmin && student.status === 'archived' && (
+                        <button
+                          onClick={() => handleRestore(student)}
+                          className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"
+                          title="Arxivdan tiklash"
+                        >
+                          <ArchiveRestore className="w-4 h-4" />
+                        </button>
+                      )}
+                      {isAdmin && (student.status === 'active' || !student.status) && (
+                        <button
+                          onClick={() => { setSelectedStudent(student); setDeleteReason(''); setShowDeleteModal(true); }}
+                          className="p-2 text-gray-400 hover:text-orange-600 hover:bg-orange-50 rounded-lg"
+                          title="Arxivga o'tkazish yoki o'chirish"
+                        >
+                          <Archive className="w-4 h-4" />
+                        </button>
+                      )}
+                      {isDirector && student.status === 'archived' && (
+                        <button
+                          onClick={() => { setSelectedStudent(student); setDeleteReason(''); setShowDeleteModal(true); }}
+                          className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                          title="Butunlay o'chirish"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       )}
                     </div>
                   </Table.Cell>
@@ -1029,6 +1341,7 @@ const Students = () => {
             </Table.Body>
           </Table>
         </Card>
+        </>
       ) : (
         <Card><EmptyState icon={Search} title="O'quvchilar topilmadi" action={<Button onClick={() => { setSearchQuery(''); setFilterGroup(''); }}>Tozalash</Button>} /></Card>
       )}
@@ -1080,6 +1393,10 @@ const Students = () => {
               <FieldError error={formErrors.phone} />
             </div>
             <div>
+              <Input label="Telegram raqami (ixtiyoriy)" value={formData.telegramPhone} onChange={(e) => setFormData({ ...formData, telegramPhone: e.target.value })} placeholder="Telegram telefon (login raqamidan farq qilsa)" />
+              <p className="text-xs text-gray-400 mt-1">Agar o'quvchining Telegram va login raqami farq qilsa kiriting</p>
+            </div>
+            <div>
               <Select label="Guruh *" value={formData.groupId} onChange={(e) => setFormData({ ...formData, groupId: e.target.value })} options={activeGroups.map(g => ({ value: g.id, label: g.name }))} />
               <FieldError error={formErrors.groupId} />
             </div>
@@ -1089,31 +1406,38 @@ const Students = () => {
           
           <h4 className="font-medium pt-2 border-t">O'qish va to'lov sozlamalari</h4>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Input 
-              label="O'qishni boshlash sanasi *" 
-              type="date" 
-              value={formData.startDate} 
-              onChange={(e) => setFormData({ ...formData, startDate: e.target.value })} 
-              required 
+            <Input
+              label="O'qishni boshlash sanasi *"
+              type="date"
+              value={formData.startDate}
+              onChange={(e) => {
+                const d = e.target.value;
+                const day = d ? String(new Date(d + 'T00:00:00').getDate()) : formData.paymentDay;
+                setFormData({ ...formData, startDate: d, paymentDay: day });
+              }}
+              required
             />
-            <Select 
-              label="To'lov turi" 
-              value={formData.paymentType} 
-              onChange={(e) => setFormData({ ...formData, paymentType: e.target.value })} 
+            <Select
+              label="To'lov turi"
+              value={formData.paymentType}
+              onChange={(e) => setFormData({ ...formData, paymentType: e.target.value })}
               options={[
                 { value: 'full_month', label: 'To\'liq oylik (1-sanadan)' },
                 { value: 'prorated', label: 'Proporsional (boshlash sanasidan)' }
-              ]} 
+              ]}
             />
-            <Input 
-              label="To'lov kuni (oyning)" 
-              type="number" 
-              min="1" 
-              max="28" 
-              value={formData.paymentDay} 
-              onChange={(e) => setFormData({ ...formData, paymentDay: e.target.value })} 
-              placeholder="1"
-            />
+            <div>
+              <Input
+                label="Dars kunidan boshlanish (to'lov)"
+                type="number"
+                min="1"
+                max="28"
+                value={formData.paymentDay}
+                onChange={(e) => setFormData({ ...formData, paymentDay: e.target.value })}
+                placeholder="1"
+              />
+              <p className="text-xs text-blue-500 mt-1">✓ Boshlash sanasidan (12 dars = 1 to'lov davri)</p>
+            </div>
           </div>
           <p className="text-xs text-gray-500">
             * Proporsional: Agar o'quvchi oyning o'rtasida boshlasa, birinchi oylik proporsional hisoblanadi
@@ -1182,6 +1506,45 @@ const Students = () => {
         </form>
       </Modal>
 
+      {/* Reset Password Modal */}
+      <Modal isOpen={showResetModal} onClose={() => setShowResetModal(false)} title="Parolni tiklash" size="sm">
+        <div className="space-y-4">
+          <p className="text-gray-700">
+            <strong>{selectedStudent?.fullName}</strong> uchun yangi parol generatsiya qilinadi.
+          </p>
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm">
+              {selectedStudent?.userId ? (
+                <span className="text-blue-600">✓ O'quvchi Telegramga parol yuboriladi (agar ulangan bo'lsa)</span>
+              ) : (
+                <span className="text-gray-400">✗ O'quvchi Telegram ulanmagan</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              {selectedStudent?.parentTelegramChatId ? (
+                <span className="text-blue-600">✓ Ota-ona Telegramga parol yuboriladi</span>
+              ) : (
+                <span className="text-gray-400">✗ Ota-ona Telegram ulanmagan</span>
+              )}
+            </div>
+          </div>
+
+          <div className="p-3 bg-yellow-50 rounded-lg text-sm text-yellow-800">
+            ⚠️ Yangi parol avvalgi parolni o'chirib yuboradi. O'quvchi birinchi kirishda parolni o'zgartirish talab qilinadi.
+          </div>
+
+          <div className="flex gap-3">
+            <Button variant="outline" className="flex-1" onClick={() => setShowResetModal(false)}>
+              Bekor qilish
+            </Button>
+            <Button className="flex-1" loading={resetLoading} onClick={handleResetPassword}>
+              Yangi parol berish
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Credentials Modal */}
       <Modal isOpen={showCredentialsModal} onClose={() => setShowCredentialsModal(false)} title="Login ma'lumotlari" size="md">
         <div className="space-y-4">
@@ -1241,12 +1604,24 @@ const Students = () => {
               <FieldError error={formErrors.phone} />
             </div>
             <div>
+              <Input label="Telegram raqami (ixtiyoriy)" value={formData.telegramPhone} onChange={(e) => setFormData({ ...formData, telegramPhone: e.target.value })} placeholder="Login raqamidan farq qilsa" />
+            </div>
+            <div>
               <Select label="Guruh *" value={formData.groupId} onChange={(e) => setFormData({ ...formData, groupId: e.target.value })} options={activeGroups.map(g => ({ value: g.id, label: g.name }))} />
               <FieldError error={formErrors.groupId} />
             </div>
             <Input label="Tug'ilgan sana" type="date" value={formData.birthDate} onChange={(e) => setFormData({ ...formData, birthDate: e.target.value })} />
-            <Input label="Boshlagan sana" type="date" value={formData.startDate} onChange={(e) => setFormData({ ...formData, startDate: e.target.value })} />
-            <Input label="To'lov kuni" type="number" min="1" max="28" value={formData.paymentDay} onChange={(e) => setFormData({ ...formData, paymentDay: e.target.value })} placeholder="1" />
+            <Input
+              label="Boshlagan sana"
+              type="date"
+              value={formData.startDate}
+              onChange={(e) => {
+                const d = e.target.value;
+                const day = d ? String(new Date(d + 'T00:00:00').getDate()) : formData.paymentDay;
+                setFormData({ ...formData, startDate: d, paymentDay: day });
+              }}
+            />
+            <Input label="To'lov sanasi (oyning)" type="number" min="1" max="28" value={formData.paymentDay} onChange={(e) => setFormData({ ...formData, paymentDay: e.target.value })} placeholder="1" />
             <Select
               label="To'lov turi"
               value={formData.paymentType}
@@ -1333,11 +1708,93 @@ const Students = () => {
       </Modal>
 
       {/* Delete Modal */}
-      <Modal isOpen={showDeleteModal} onClose={() => setShowDeleteModal(false)} title="O'chirish">
-        <p className="text-gray-600 mb-4"><strong>{selectedStudent?.fullName}</strong> ni o'chirishni xohlaysizmi?</p>
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setShowDeleteModal(false)}>Bekor qilish</Button>
-          <Button variant="danger" loading={formLoading} onClick={handleDelete}>O'chirish</Button>
+      <Modal isOpen={showDeleteModal} onClose={() => setShowDeleteModal(false)} title="O'quvchi bilan amal">
+        <div className="space-y-4">
+          <p className="text-gray-600 text-sm">
+            <strong>{selectedStudent?.fullName}</strong> uchun amalni tanlang:
+          </p>
+
+          {/* Amal tanlash */}
+          {selectedStudent?.status !== 'archived' && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="p-3 border-2 border-orange-200 bg-orange-50 rounded-xl text-center">
+                <Archive className="w-6 h-6 text-orange-500 mx-auto mb-1" />
+                <p className="text-sm font-medium text-orange-700">Arxivga o'tkazish</p>
+                <p className="text-xs text-orange-500 mt-0.5">Ma'lumotlar saqlanadi</p>
+              </div>
+              <div className="p-3 border-2 border-red-200 bg-red-50 rounded-xl text-center">
+                <Trash2 className="w-6 h-6 text-red-500 mx-auto mb-1" />
+                <p className="text-sm font-medium text-red-700">Butunlay o'chirish</p>
+                <p className="text-xs text-red-500 mt-0.5">Barcha ma'lumot o'chadi</p>
+              </div>
+            </div>
+          )}
+
+          {selectedStudent?.status === 'archived' && (
+            <div className="p-3 border-2 border-red-200 bg-red-50 rounded-xl flex items-center gap-3">
+              <Trash2 className="w-5 h-5 text-red-500 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-red-700">Butunlay o'chirish</p>
+                <p className="text-xs text-red-500">Barcha ma'lumotlar o'chib ketadi, tiklab bo'lmaydi</p>
+              </div>
+            </div>
+          )}
+
+          {/* Sabab */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Sabab <span className="text-red-500">*</span>
+            </label>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {["To'lov qilmadi", "Boshqa markazga o'tdi", "Ko'chib ketdi", "Shaxsiy sabab", "Dars sifatidan norozi", "Kurs tugadi"].map(r => (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => setDeleteReason(r)}
+                  className={`px-3 py-1 rounded-full text-xs border transition-colors ${
+                    deleteReason === r
+                      ? 'bg-gray-800 border-gray-800 text-white font-medium'
+                      : 'bg-gray-50 border-gray-200 text-gray-600 hover:border-gray-400'
+                  }`}
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+            <textarea
+              value={deleteReason}
+              onChange={e => setDeleteReason(e.target.value)}
+              placeholder="Yoki sababni o'zingiz yozing..."
+              rows={2}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-400 resize-none"
+            />
+          </div>
+
+          {/* Tugmalar */}
+          <div className="flex flex-wrap justify-end gap-2 pt-1 border-t">
+            <Button variant="ghost" onClick={() => setShowDeleteModal(false)}>Bekor qilish</Button>
+            {selectedStudent?.status !== 'archived' && (
+              <Button
+                variant="outline"
+                loading={formLoading}
+                onClick={handleArchive}
+                disabled={!deleteReason.trim()}
+                className="border-orange-300 text-orange-700 hover:bg-orange-50"
+              >
+                <Archive className="w-4 h-4 mr-1" /> Arxivga o'tkazish
+              </Button>
+            )}
+            {isDirector && (
+              <Button
+                variant="danger"
+                loading={formLoading}
+                onClick={handleDelete}
+                disabled={!deleteReason.trim()}
+              >
+                <Trash2 className="w-4 h-4 mr-1" /> Butunlay o'chirish
+              </Button>
+            )}
+          </div>
         </div>
       </Modal>
 

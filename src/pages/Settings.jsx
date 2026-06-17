@@ -1,11 +1,14 @@
 import { useState, useEffect } from 'react';
-import { Save, Building, Phone, Mail, Globe, Clock, Percent, Users, Wallet, BookOpen, Plus, X, CheckCircle, AlertCircle, RefreshCw, Send, Copy, Check, ExternalLink } from 'lucide-react';
+import { Save, Building, Phone, Clock, Percent, Users, Wallet, BookOpen, Plus, X, CheckCircle, AlertCircle, RefreshCw, ExternalLink, Eye, EyeOff } from 'lucide-react';
 import { Card, Button, Input, Loading, Select } from '../components/common';
-import { settingsAPI, studentsAPI } from '../services/api';
+import { settingsAPI, usersAPI } from '../services/api';
 import { toast } from 'react-toastify';
-import { getBotInfo, getUpdates, parseRegistrations } from '../services/telegram';
+import { getBotInfo } from '../services/telegram';
+import { useAuth } from '../contexts/AuthContext';
+import { auth } from '../services/firebase';
 
 const Settings = () => {
+  const { centerId } = useAuth();
   const [settings, setSettings] = useState({
     centerName: '',
     phone: '',
@@ -37,6 +40,12 @@ const Settings = () => {
     telegramEnabled: false,
     // To'lov eslatmasi
     paymentReminderDays: '3',
+    // Avtomatik bildirishnomalar
+    weeklyReportEnabled: true,
+    paymentReminderEnabled: true,
+    debtReminderEnabled: true,
+    homeworkNotifEnabled: true,
+    classReminderEnabled: true,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -44,12 +53,19 @@ const Settings = () => {
 
   // Telegram
   const [botVerifying, setBotVerifying] = useState(false);
-  const [botInfo, setBotInfo] = useState(null);   // { id, username, first_name }
-  const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState(null); // { linked, total }
+  const [botInfo, setBotInfo] = useState(null);
   const [copiedToken, setCopiedToken] = useState(false);
+  const [showToken, setShowToken] = useState(false);
+  const [webhookSetting, setWebhookSetting] = useState(false);
+  const [webhookStatus, setWebhookStatus] = useState(null);
+  const [linkedStats, setLinkedStats] = useState(null); // { linked, total }
+  const [statsLoading, setStatsLoading] = useState(false);
 
   useEffect(() => { fetchSettings(); }, []);
+
+  useEffect(() => {
+    if (settings.telegramEnabled) fetchLinkedStats();
+  }, [settings.telegramEnabled]);
 
   const fetchSettings = async () => {
     try {
@@ -96,48 +112,51 @@ const Settings = () => {
     }
   };
 
-  const handleSyncChatIds = async () => {
+  const fetchLinkedStats = async () => {
+    setStatsLoading(true);
+    try {
+      const users = await usersAPI.getAll();
+      const parents = users.filter(u => u.role === 'parent');
+      const linked = parents.filter(u => u.telegramId).length;
+      setLinkedStats({ linked, total: parents.length });
+    } catch {
+      setLinkedStats(null);
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
+  const handleSetWebhook = async () => {
     if (!settings.telegramBotToken) {
       toast.error("Avval bot tokenini saqlang");
       return;
     }
-    setSyncing(true);
-    setSyncResult(null);
+    if (!centerId) {
+      toast.error("Markaz ID topilmadi");
+      return;
+    }
+    setWebhookSetting(true);
+    setWebhookStatus(null);
     try {
-      const updates = await getUpdates(settings.telegramBotToken.trim());
-      const registrations = parseRegistrations(updates);
-
-      if (registrations.length === 0) {
-        toast.info("Yangi ro'yxatdan o'tgan foydalanuvchi topilmadi");
-        setSyncing(false);
-        return;
-      }
-
-      // Match by parentPhone → save parentTelegramChatId on student record
-      const allStudents = await studentsAPI.getAll();
-      let linked = 0;
-
-      for (const reg of registrations) {
-        const match = allStudents.find(s => {
-          const p = (s.parentPhone || '').replace(/\D/g, '');
-          return p === reg.phone || p.endsWith(reg.phone) || reg.phone.endsWith(p);
-        });
-        if (match && !match.parentTelegramChatId) {
-          await studentsAPI.update(match.id, { parentTelegramChatId: String(reg.chatId) });
-          linked++;
-        }
-      }
-
-      setSyncResult({ linked, total: registrations.length });
-      if (linked > 0) {
-        toast.success(`${linked} ta ota-ona Telegram bilan ulandi!`);
+      const project = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+      const idToken = await auth.currentUser?.getIdToken();
+      const url = `https://us-central1-${project}.cloudfunctions.net/setupWebhook`;
+      const res = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${idToken}` },
+      });
+      const text = await res.text();
+      if (res.ok) {
+        setWebhookStatus('ok');
+        toast.success("Webhook muvaffaqiyatli o'rnatildi!");
       } else {
-        toast.info(`${registrations.length} ta yangi ro'yxat topildi, lekin mos o'quvchi topilmadi`);
+        setWebhookStatus('error');
+        toast.error("Webhook xatoligi: " + text);
       }
     } catch (err) {
-      toast.error("Sinxronlashda xatolik: " + err.message);
+      setWebhookStatus('error');
+      toast.error("Xatolik: " + err.message);
     } finally {
-      setSyncing(false);
+      setWebhookSetting(false);
     }
   };
 
@@ -487,16 +506,27 @@ const Settings = () => {
                   <div className="space-y-2">
                     <label className="block text-sm font-medium text-gray-700">Bot Token</label>
                     <div className="flex gap-2">
-                      <input
-                        type="password"
-                        value={settings.telegramBotToken}
-                        onChange={(e) => {
-                          setSettings({ ...settings, telegramBotToken: e.target.value });
-                          setBotInfo(null);
-                        }}
-                        placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
-                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      />
+                      <div className="relative flex-1">
+                        <input
+                          type={showToken ? 'text' : 'password'}
+                          value={settings.telegramBotToken}
+                          onChange={(e) => {
+                            setSettings({ ...settings, telegramBotToken: e.target.value });
+                            setBotInfo(null);
+                          }}
+                          placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+                          autoComplete="off"
+                          className="w-full pr-9 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowToken(v => !v)}
+                          className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-gray-400 hover:text-gray-600"
+                          title={showToken ? "Yashirish" : "Ko'rsatish"}
+                        >
+                          {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
                       <Button
                         type="button"
                         variant="outline"
@@ -534,35 +564,180 @@ const Settings = () => {
                     helpText="Tekshirish tugmasidan so'ng avtomatik to'ldiriladi"
                   />
 
-                  {/* Sync button */}
-                  <div className="flex items-center gap-3 pt-1">
+                  {/* Ota-onalar holati — avtomatik yuklanadi */}
+                  <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border">
+                    <div className="flex items-center gap-2 text-sm text-gray-700">
+                      <Users className="w-4 h-4 text-gray-500" />
+                      <span>Telegram bilan ulangan ota-onalar:</span>
+                      {statsLoading ? (
+                        <span className="text-gray-400">yuklanmoqda...</span>
+                      ) : linkedStats ? (
+                        <span className={`font-semibold ${linkedStats.linked > 0 ? 'text-green-700' : 'text-gray-500'}`}>
+                          {linkedStats.linked} / {linkedStats.total}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={fetchLinkedStats}
+                      className="text-gray-400 hover:text-gray-600"
+                      title="Yangilash"
+                    >
+                      <RefreshCw className={`w-4 h-4 ${statsLoading ? 'animate-spin' : ''}`} />
+                    </button>
+                  </div>
+
+                  {/* Webhook tugmasi */}
+                  <div className="flex flex-wrap items-center gap-3 pt-1">
                     <Button
                       type="button"
-                      variant="outline"
-                      icon={RefreshCw}
-                      loading={syncing}
-                      onClick={handleSyncChatIds}
+                      variant="primary"
+                      loading={webhookSetting}
+                      onClick={handleSetWebhook}
                       disabled={!settings.telegramBotToken}
                     >
-                      Chat ID-larni sinxronlash
+                      🔗 Webhookni o'rnatish
                     </Button>
 
-                    {syncResult && (
-                      <span className="text-sm text-gray-600">
-                        {syncResult.linked > 0
-                          ? <span className="text-green-700 font-medium">✓ {syncResult.linked} ta yangi ota-ona ulandi</span>
-                          : <span className="text-gray-500">Yangi ulanish topilmadi</span>
-                        }
+                    {webhookStatus === 'ok' && (
+                      <span className="flex items-center gap-1 text-sm text-green-700 font-medium">
+                        <CheckCircle className="w-4 h-4" /> Webhook ulandi
+                      </span>
+                    )}
+                    {webhookStatus === 'error' && (
+                      <span className="flex items-center gap-1 text-sm text-red-600 font-medium">
+                        <AlertCircle className="w-4 h-4" /> Webhook xatoligi
                       </span>
                     )}
                   </div>
 
-                  {/* How sync works */}
                   <p className="text-xs text-gray-400">
-                    Sinxronlash: ota-onalar botga <code className="bg-gray-100 px-1 rounded">/start telefon</code> xabarini yuborganda,
-                    bu tugma orqali ularning chat ID-lari tizimga saqlanadi.
-                    O'quvchilar sahifasida har bir ota-onaga havola yaratishingiz mumkin.
+                    Ota-onalar botga <code className="bg-gray-100 px-1 rounded">/start</code> yuborib, telefon raqamini yuborganda
+                    — tizimga <strong>avtomatik</strong> ulanadi. Qo'lda sinxronlash kerak emas.
                   </p>
+
+                  {/* Avtomatik bildirishnomalar */}
+                  <div className="mt-4 border-t pt-4">
+                    <p className="text-sm font-semibold text-gray-700 mb-3">Avtomatik bildirishnomalar</p>
+                    <div className="space-y-3">
+
+                      {/* Haftalik hisobot */}
+                      <div className="flex items-start justify-between gap-4 p-3 bg-gray-50 rounded-lg">
+                        <div>
+                          <p className="text-sm font-medium text-gray-800">Haftalik hisobot</p>
+                          <p className="text-xs text-gray-500">Har dushanba — o'tgan hafta baholari + davomat xulosasi</p>
+                        </div>
+                        <label className="flex items-center cursor-pointer shrink-0">
+                          <div className="relative">
+                            <input
+                              type="checkbox"
+                              className="sr-only"
+                              checked={settings.weeklyReportEnabled}
+                              onChange={(e) => setSettings({ ...settings, weeklyReportEnabled: e.target.checked })}
+                            />
+                            <div className={`w-10 h-5 rounded-full transition-colors ${settings.weeklyReportEnabled ? 'bg-primary-600' : 'bg-gray-300'}`} />
+                            <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${settings.weeklyReportEnabled ? 'translate-x-5' : ''}`} />
+                          </div>
+                        </label>
+                      </div>
+
+                      {/* To'lov eslatmasi */}
+                      <div className="flex items-start justify-between gap-4 p-3 bg-gray-50 rounded-lg">
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-gray-800">Balansdagi mablag'</p>
+                          <p className="text-xs text-gray-500 mb-2">To'lov qilishga X kun qoldi eslatmasi</p>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-500">Eslatma</span>
+                            <input
+                              type="number"
+                              min="1"
+                              max="14"
+                              value={settings.paymentReminderDays}
+                              onChange={(e) => setSettings({ ...settings, paymentReminderDays: e.target.value })}
+                              disabled={!settings.paymentReminderEnabled}
+                              className="w-14 px-2 py-1 text-sm border border-gray-300 rounded text-center disabled:opacity-50"
+                            />
+                            <span className="text-xs text-gray-500">kun oldin yuboriladi</span>
+                          </div>
+                        </div>
+                        <label className="flex items-center cursor-pointer shrink-0">
+                          <div className="relative">
+                            <input
+                              type="checkbox"
+                              className="sr-only"
+                              checked={settings.paymentReminderEnabled}
+                              onChange={(e) => setSettings({ ...settings, paymentReminderEnabled: e.target.checked })}
+                            />
+                            <div className={`w-10 h-5 rounded-full transition-colors ${settings.paymentReminderEnabled ? 'bg-primary-600' : 'bg-gray-300'}`} />
+                            <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${settings.paymentReminderEnabled ? 'translate-x-5' : ''}`} />
+                          </div>
+                        </label>
+                      </div>
+
+                      {/* Dars tugaganda eslatma */}
+                      <div className="flex items-start justify-between gap-4 p-3 bg-gray-50 rounded-lg">
+                        <div>
+                          <p className="text-sm font-medium text-gray-800">Dars tugagach eslatma</p>
+                          <p className="text-xs text-gray-500">Dars tugagandan 15 daqiqa o'tgach o'qituvchiga davomat/baho belgilash eslatmasi</p>
+                        </div>
+                        <label className="flex items-center cursor-pointer shrink-0">
+                          <div className="relative">
+                            <input
+                              type="checkbox"
+                              className="sr-only"
+                              checked={settings.classReminderEnabled}
+                              onChange={(e) => setSettings({ ...settings, classReminderEnabled: e.target.checked })}
+                            />
+                            <div className={`w-10 h-5 rounded-full transition-colors ${settings.classReminderEnabled ? 'bg-primary-600' : 'bg-gray-300'}`} />
+                            <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${settings.classReminderEnabled ? 'translate-x-5' : ''}`} />
+                          </div>
+                        </label>
+                      </div>
+
+                      {/* Qarzdorlik eslatmasi */}
+                      <div className="flex items-start justify-between gap-4 p-3 bg-gray-50 rounded-lg">
+                        <div>
+                          <p className="text-sm font-medium text-gray-800">Qarzdorlik eslatmasi</p>
+                          <p className="text-xs text-gray-500">Har juma — qarzi bor ota-onalarga eslatma</p>
+                        </div>
+                        <label className="flex items-center cursor-pointer shrink-0">
+                          <div className="relative">
+                            <input
+                              type="checkbox"
+                              className="sr-only"
+                              checked={settings.debtReminderEnabled}
+                              onChange={(e) => setSettings({ ...settings, debtReminderEnabled: e.target.checked })}
+                            />
+                            <div className={`w-10 h-5 rounded-full transition-colors ${settings.debtReminderEnabled ? 'bg-primary-600' : 'bg-gray-300'}`} />
+                            <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${settings.debtReminderEnabled ? 'translate-x-5' : ''}`} />
+                          </div>
+                        </label>
+                      </div>
+
+                      {/* Uyga vazifa */}
+                      <div className="flex items-start justify-between gap-4 p-3 bg-gray-50 rounded-lg">
+                        <div>
+                          <p className="text-sm font-medium text-gray-800">Yangi uyga vazifa</p>
+                          <p className="text-xs text-gray-500">Vazifa qo'yilganda darhol ota-ona va o'quvchiga xabar</p>
+                        </div>
+                        <label className="flex items-center cursor-pointer shrink-0">
+                          <div className="relative">
+                            <input
+                              type="checkbox"
+                              className="sr-only"
+                              checked={settings.homeworkNotifEnabled}
+                              onChange={(e) => setSettings({ ...settings, homeworkNotifEnabled: e.target.checked })}
+                            />
+                            <div className={`w-10 h-5 rounded-full transition-colors ${settings.homeworkNotifEnabled ? 'bg-primary-600' : 'bg-gray-300'}`} />
+                            <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${settings.homeworkNotifEnabled ? 'translate-x-5' : ''}`} />
+                          </div>
+                        </label>
+                      </div>
+
+                    </div>
+                  </div>
                 </>
               )}
             </div>

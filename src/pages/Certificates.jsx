@@ -10,6 +10,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
 import { formatDate } from '../utils/helpers';
 import { toast } from 'react-toastify';
+import { captureError } from '../services/sentry';
 import jsPDF from 'jspdf';
 import QRCode from 'qrcode';
 
@@ -130,15 +131,20 @@ const Certificates = () => {
         setGroups(groupsData);
         setCertificates(certsData);
       }
-    } catch (err) { console.error(err); }
-    finally { setLoading(false); }
+    } catch (err) {
+      captureError(err, { context: 'fetchCertificates' });
+      toast.error("Sertifikatlar yuklanmadi. Sahifani yangilang.", { toastId: 'cert-load-error' });
+    } finally { setLoading(false); }
   };
 
   const fetchStudents = async () => {
     try {
       const data = await studentsAPI.getByGroup(selectedGroup);
       setStudents(data);
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      captureError(err, { context: 'fetchStudents' });
+      toast.error("O'quvchilar yuklanmadi.", { toastId: 'cert-load-error' });
+    }
   };
 
   // QR Code yaratish
@@ -154,7 +160,7 @@ const Certificates = () => {
       });
       return qrDataUrl;
     } catch (err) {
-      console.error('QR code generation error:', err);
+      captureError(err, { context: 'QR code generation' });
       return null;
     }
   };
@@ -313,7 +319,7 @@ const Certificates = () => {
       doc.save(`Sertifikat_${cert.studentName.replace(/\s+/g, '_')}.pdf`);
       toast.success("Sertifikat yuklab olindi!");
     } catch (err) {
-      console.error(err);
+      captureError(err, { context: 'handleDownloadPDF' });
       toast.error("PDF yaratishda xatolik");
     }
   };
@@ -324,7 +330,7 @@ const Certificates = () => {
       doc.autoPrint();
       window.open(doc.output('bloburl'), '_blank');
     } catch (err) {
-      console.error(err);
+      captureError(err, { context: 'handlePrint' });
       toast.error("Xatolik yuz berdi");
     }
   };
@@ -401,7 +407,7 @@ const Certificates = () => {
       });
       toast.success("Sertifikat yaratildi!");
     } catch (err) {
-      console.error(err);
+      captureError(err, { context: 'handleCreate' });
       toast.error("Xatolik yuz berdi");
     }
   };

@@ -6,6 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { ROLES, ATTENDANCE_STATUS } from '../utils/constants';
 import { formatDate, formatDateISO } from '../utils/helpers';
 import { toast } from 'react-toastify';
+import { captureError } from '../services/sentry';
 
 const Attendance = () => {
   const { userData, role } = useAuth();
@@ -67,7 +68,8 @@ const Attendance = () => {
       filtered.sort((a, b) => a.date.localeCompare(b.date));
       setStudentHistory(filtered);
     } catch (err) {
-      console.error(err);
+      captureError(err, { context: 'fetchStudentHistory' });
+      toast.error("Davomat tarixi yuklanmadi.", { toastId: 'attendance-load-error' });
     } finally {
       setHistoryLoading(false);
     }
@@ -134,8 +136,10 @@ const Attendance = () => {
       if (groupsData.length === 1) {
         setSelectedGroup(groupsData[0].id);
       }
-    } catch (err) { console.error(err); }
-    finally { setLoading(false); }
+    } catch (err) {
+      captureError(err, { context: 'fetchGroups' });
+      toast.error("Guruhlar yuklanmadi. Sahifani yangilang.", { toastId: 'attendance-load-error' });
+    } finally { setLoading(false); }
   };
 
   const fetchStudentsAndAttendance = async () => {
@@ -159,7 +163,10 @@ const Attendance = () => {
 
       const hasExistingAttendance = attendanceData.length > 0;
       setIsLocked(hasExistingAttendance && !isAdmin);
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      captureError(err, { context: 'fetchStudentsAndAttendance' });
+      toast.error("O'quvchilar yoki davomat yuklanmadi.", { toastId: 'attendance-load-error' });
+    }
   };
 
   const handleDateChange = (days) => {
@@ -199,15 +206,16 @@ const Attendance = () => {
     late: Object.values(attendance).filter(s => s === ATTENDANCE_STATUS.LATE).length,
   };
 
-  const StatusButton = ({ studentId, status, icon: Icon, color, label }) => {
+  const StatusButton = ({ studentId, status, icon: Icon, color, label, fullWidth }) => {
     const isActive = attendance[studentId] === status;
     return (
       <button
         onClick={() => handleStatusChange(studentId, status)}
-        className={`p-2 rounded-lg transition ${isActive ? `${color} text-white` : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
+        className={`${fullWidth ? 'w-full flex items-center justify-center gap-1 py-2 text-xs font-medium' : 'p-2'} rounded-lg transition ${isActive ? `${color} text-white` : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
         title={label}
       >
-        <Icon className="w-5 h-5" />
+        <Icon className={fullWidth ? 'w-4 h-4' : 'w-5 h-5'} />
+        {fullWidth && <span>{label}</span>}
       </button>
     );
   };
@@ -418,7 +426,7 @@ const Attendance = () => {
                 label="Guruh"
                 value={selectedGroup}
                 onChange={(e) => setSelectedGroup(e.target.value)}
-                options={groups.map(g => ({ value: g.id, label: g.name }))}
+                options={groups.filter(g => g.status !== 'graduated').map(g => ({ value: g.id, label: g.name }))}
                 placeholder="Guruhni tanlang"
               />
             </Card>
@@ -454,35 +462,47 @@ const Attendance = () => {
                 {students.length > 0 ? (
                   <div className="space-y-3">
                     {students.map((student, index) => (
-                      <div key={student.id} className={`flex items-center gap-4 p-3 rounded-lg border-2 transition ${
+                      <div key={student.id} className={`p-3 rounded-lg border-2 transition ${
                         attendance[student.id] === ATTENDANCE_STATUS.PRESENT ? 'border-green-200 bg-green-50/50' :
                         attendance[student.id] === ATTENDANCE_STATUS.ABSENT ? 'border-red-200 bg-red-50/50' :
                         attendance[student.id] === ATTENDANCE_STATUS.LATE ? 'border-yellow-200 bg-yellow-50/50' :
                         attendance[student.id] === ATTENDANCE_STATUS.EXCUSED ? 'border-blue-200 bg-blue-50/50' :
                         'border-gray-100'
                       }`}>
-                        <span className="text-gray-400 w-6">{index + 1}</span>
-                        <Avatar name={student.fullName} />
-                        <div className="flex-1">
-                          <p className="font-medium">{student.fullName}</p>
-                          {attendance[student.id] && (
-                            <Badge variant={
-                              attendance[student.id] === ATTENDANCE_STATUS.PRESENT ? 'success' :
-                              attendance[student.id] === ATTENDANCE_STATUS.ABSENT ? 'danger' :
-                              attendance[student.id] === ATTENDANCE_STATUS.LATE ? 'warning' : 'info'
-                            } className="mt-1">
-                              {attendance[student.id] === ATTENDANCE_STATUS.PRESENT ? 'Keldi' :
-                               attendance[student.id] === ATTENDANCE_STATUS.ABSENT ? 'Kelmadi' :
-                               attendance[student.id] === ATTENDANCE_STATUS.LATE ? 'Kechikdi' : 'Sababli'}
-                            </Badge>
+                        <div className="flex items-center gap-3">
+                          <span className="text-gray-400 text-sm w-5 flex-shrink-0">{index + 1}</span>
+                          <Avatar name={student.fullName} />
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium truncate">{student.fullName}</p>
+                            {attendance[student.id] && (
+                              <Badge variant={
+                                attendance[student.id] === ATTENDANCE_STATUS.PRESENT ? 'success' :
+                                attendance[student.id] === ATTENDANCE_STATUS.ABSENT ? 'danger' :
+                                attendance[student.id] === ATTENDANCE_STATUS.LATE ? 'warning' : 'info'
+                              } className="mt-0.5 text-xs">
+                                {attendance[student.id] === ATTENDANCE_STATUS.PRESENT ? 'Keldi' :
+                                 attendance[student.id] === ATTENDANCE_STATUS.ABSENT ? 'Kelmadi' :
+                                 attendance[student.id] === ATTENDANCE_STATUS.LATE ? 'Kechikdi' : 'Sababli'}
+                              </Badge>
+                            )}
+                          </div>
+                          {/* Desktop: tugmalar yonma-yon */}
+                          {canEdit && (
+                            <div className="hidden sm:flex gap-2">
+                              <StatusButton studentId={student.id} status={ATTENDANCE_STATUS.PRESENT} icon={Check} color="bg-green-500" label="Keldi" />
+                              <StatusButton studentId={student.id} status={ATTENDANCE_STATUS.ABSENT} icon={X} color="bg-red-500" label="Kelmadi" />
+                              <StatusButton studentId={student.id} status={ATTENDANCE_STATUS.LATE} icon={Clock} color="bg-yellow-500" label="Kechikdi" />
+                              <StatusButton studentId={student.id} status={ATTENDANCE_STATUS.EXCUSED} icon={AlertCircle} color="bg-blue-500" label="Sababli" />
+                            </div>
                           )}
                         </div>
+                        {/* Mobile: tugmalar 2x2 grid */}
                         {canEdit && (
-                          <div className="flex gap-2">
-                            <StatusButton studentId={student.id} status={ATTENDANCE_STATUS.PRESENT} icon={Check} color="bg-green-500" label="Keldi" />
-                            <StatusButton studentId={student.id} status={ATTENDANCE_STATUS.ABSENT} icon={X} color="bg-red-500" label="Kelmadi" />
-                            <StatusButton studentId={student.id} status={ATTENDANCE_STATUS.LATE} icon={Clock} color="bg-yellow-500" label="Kechikdi" />
-                            <StatusButton studentId={student.id} status={ATTENDANCE_STATUS.EXCUSED} icon={AlertCircle} color="bg-blue-500" label="Sababli" />
+                          <div className="grid grid-cols-4 gap-1.5 mt-2 sm:hidden">
+                            <StatusButton studentId={student.id} status={ATTENDANCE_STATUS.PRESENT} icon={Check} color="bg-green-500" label="Keldi" fullWidth />
+                            <StatusButton studentId={student.id} status={ATTENDANCE_STATUS.ABSENT} icon={X} color="bg-red-500" label="Kelmadi" fullWidth />
+                            <StatusButton studentId={student.id} status={ATTENDANCE_STATUS.LATE} icon={Clock} color="bg-yellow-500" label="Kechikdi" fullWidth />
+                            <StatusButton studentId={student.id} status={ATTENDANCE_STATUS.EXCUSED} icon={AlertCircle} color="bg-blue-500" label="Sababli" fullWidth />
                           </div>
                         )}
                       </div>

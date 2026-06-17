@@ -74,6 +74,57 @@ const Payments = () => {
   const isStudentOrParent = role === ROLES.STUDENT || role === ROLES.PARENT;
   const isMountedRef = useRef(true);
 
+  // ==================== 12-DARS BILLING HELPERS ====================
+  const MONTH_NAMES = ['Yan','Fev','Mar','Apr','May','Iyn','Iyl','Avg','Sen','Okt','Noy','Dek'];
+
+  // Berilgan sanaga bir kalendar oyi qo'shadi (31 Jan → 28/29 Feb kabi edge caselarni ham to'g'ri bajaradi)
+  const addOneMonth = (dateStr) => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    let newYear = y;
+    let newMonth = m + 1;
+    if (newMonth > 12) { newMonth = 1; newYear++; }
+    const maxDay = new Date(newYear, newMonth, 0).getDate(); // o'sha oyning oxirgi kuni
+    const newDay = Math.min(d, maxDay);
+    return `${newYear}-${String(newMonth).padStart(2, '0')}-${String(newDay).padStart(2, '0')}`;
+  };
+
+  // "17 May – 17 Iyn 2026" formatida davr ko'rinishi
+  const formatPeriodDisplay = (periodStart, periodEnd) => {
+    const [sy, sm, sd] = periodStart.split('-').map(Number);
+    const [ey, em, ed] = periodEnd.split('-').map(Number);
+    const start = `${sd} ${MONTH_NAMES[sm - 1]}`;
+    const end = `${ed} ${MONTH_NAMES[em - 1]} ${ey}`;
+    return `${start} – ${end}`;
+  };
+
+  // O'quvchining barcha oylik davrlarini qaytaradi (startDate dan joriy davrgacha)
+  // Har bir davr: startDate → xuddi shu sana keyingi oyda (30-kunlik interval)
+  const getStudentPeriods = (student) => {
+    if (!student?.startDate) return [];
+    const todayStr = new Date().toISOString().split('T')[0];
+    const periods = [];
+    let currentStart = student.startDate;
+
+    for (let i = 0; i < 60; i++) { // Max 60 davr (5 yil)
+      const periodEnd = addOneMonth(currentStart);
+      periods.push({
+        periodStart: currentStart,
+        periodEnd,
+        month: currentStart.substring(0, 7), // Eski bill bilan moslik uchun
+        periodDisplay: formatPeriodDisplay(currentStart, periodEnd),
+      });
+      if (periodEnd >= todayStr) break; // Joriy davrga yetdik
+      currentStart = periodEnd; // Keyingi davr shu davr tugagan sanadan boshlanadi
+    }
+    return periods;
+  };
+
+  // Bugunni o'z ichiga olgan davrni qaytaradi
+  const getCurrentPeriod = (student) => {
+    const periods = getStudentPeriods(student);
+    return periods.length > 0 ? periods[periods.length - 1] : null;
+  };
+
   useEffect(() => {
     isMountedRef.current = true;
     fetchData();
@@ -135,9 +186,8 @@ const Payments = () => {
             groupsData = group ? [group] : [];
           }
           
-          // Barcha to'lovlar va bills
-          const allPayments = await paymentsAPI.getAll();
-          paymentsData = allPayments.filter(p => p.studentId === studentId);
+          // Faqat shu o'quvchining to'lovlari — indexed query (studentId)
+          paymentsData = await paymentsAPI.getByStudent(studentId);
           
           try {
             const allBills = await paymentsAPI.getMonthlyBills();
@@ -189,9 +239,10 @@ const Payments = () => {
         
         const studentIds = studentsData.map(s => s.id);
         
-        // To'lovlarni filter qilish
-        const allPayments = await paymentsAPI.getAll();
-        paymentsData = allPayments.filter(p => studentIds.includes(p.studentId));
+        // Joriy yil boshidan to'lovlar — o'qituvchi guruhlari bo'yicha filter
+        const yearStart = new Date(new Date().getFullYear(), 0, 1).toISOString();
+        const yearPayments = await paymentsAPI.getSince(yearStart);
+        paymentsData = yearPayments.filter(p => studentIds.includes(p.studentId));
         
         try {
           const allBills = await paymentsAPI.getMonthlyBills();
@@ -200,14 +251,15 @@ const Payments = () => {
           billsData = [];
         }
       } else {
-        // Admin/Direktor - hamma ma'lumotlar
+        // Admin/Direktor — joriy yil to'lovlari (tarixiy ma'lumot Reports sahifasida)
+        const yearStart = new Date(new Date().getFullYear(), 0, 1).toISOString();
         const [allStudents, allGroups, allPayments] = await Promise.all([
           studentsAPI.getAll(),
           groupsAPI.getAll(),
-          paymentsAPI.getAll()
+          paymentsAPI.getSince(yearStart)
         ]);
         
-        studentsData = allStudents.filter(s => s.status === 'active');
+        studentsData = allStudents.filter(s => s.status === 'active' || !s.status);
         groupsData = allGroups;
         paymentsData = allPayments;
         
@@ -255,8 +307,15 @@ const Payments = () => {
     
     // Avval mavjud monthly_bills ni qo'shish
     (existingBills || []).forEach(bill => {
-      const key = `${bill.studentId}-${bill.month}`;
-      billsMap[key] = { ...bill };
+      const key = `${bill.studentId}-${(bill.periodStart || bill.month)}`;
+      billsMap[key] = {
+        ...bill,
+        periodDisplay: bill.periodDisplay || (
+          bill.periodStart && bill.periodEnd
+            ? formatPeriodDisplay(bill.periodStart, bill.periodEnd)
+            : null
+        ),
+      };
       
       // Bu billdagi to'lovlarni processed qilish
       if (bill.payments) {
@@ -325,7 +384,6 @@ const Payments = () => {
       const monthlyFee = groupMonthlyFee > 0 ? groupMonthlyFee : defaultFee;
       
       if (!billsMap[key]) {
-        // Yangi bill yaratish
         billsMap[key] = {
           id: `legacy-${key}`,
           studentId: payment.studentId,
@@ -339,7 +397,7 @@ const Payments = () => {
           status: 'pending',
           payments: [],
           isLegacy: true,
-          appliedDiscount: 0
+          appliedDiscount: 0,
         };
       }
       
@@ -389,10 +447,36 @@ const Payments = () => {
     return Object.values(billsMap);
   };
 
-  // Oylik hisob-kitob olish yoki yaratish
-  const getOrCreateMonthlyBill = (studentId, month) => {
-    const existing = monthlyBills.find(b => b.studentId === studentId && b.month === month);
-    if (existing) return existing;
+  // Davr uchun hisob-kitob olish yoki virtual yaratish
+  const getOrCreatePeriodBill = (studentId, period) => {
+    // DB da shu davrga mos bill bormi?
+    // periodStart bor bo'lsa - exact match; yo'q bo'lsa - month bo'yicha (legacy)
+    const existing = monthlyBills.find(b =>
+      b.studentId === studentId &&
+      (
+        (b.periodStart && b.periodStart === period.periodStart) ||
+        (!b.periodStart && b.month === period.month)
+      )
+    );
+    if (existing) {
+      // Agar o'quvchida skidka bor lekin bill skidkasiz yaratilgan va hali to'lov qilinmagan bo'lsa,
+      // totalAmount ni o'quvchining joriy skidkasi bilan qayta hisoblash
+      const student = students.find(s => s.id === studentId);
+      const discount = parseInt(student?.discount) || 0;
+      if (discount > 0 && !existing.appliedDiscount && !(existing.paidAmount > 0)) {
+        const group = groups.find(g => g.id === student?.groupId);
+        const baseFee = parseInt(group?.monthlyFee) || parseInt(group?.price) || parseInt(settings.defaultMonthlyFee) || 500000;
+        const discounted = Math.round(baseFee * (100 - discount) / 100);
+        return {
+          ...existing,
+          periodDisplay: period.periodDisplay,
+          totalAmount: discounted,
+          remainingAmount: discounted,
+          _discountApplied: discount,
+        };
+      }
+      return { ...existing, periodDisplay: period.periodDisplay };
+    }
 
     const student = students.find(s => s.id === studentId);
     const group = groups.find(g => g.id === student?.groupId);
@@ -401,143 +485,99 @@ const Payments = () => {
     if (student?.isFree) {
       return {
         studentId,
-        month,
-        totalAmount: 0,
-        paidAmount: 0,
-        remainingAmount: 0,
-        status: 'paid',
-        payments: [],
-        isVirtual: true,
-        isFree: true,
-        groupName: group?.name || '',
-        studentName: student?.fullName || ''
+        month: period.month,
+        periodStart: period.periodStart,
+        periodEnd: period.periodEnd,
+        periodDisplay: period.periodDisplay,
+        totalAmount: 0, paidAmount: 0, remainingAmount: 0,
+        status: 'paid', payments: [], isVirtual: true, isFree: true,
+        groupName: group?.name || '', studentName: student?.fullName || '',
       };
     }
 
-    // MUHIM: Guruhning monthlyFee yoki price ni olish
-    const groupMonthlyFee = parseInt(group?.monthlyFee) || parseInt(group?.price) || 0;
+    const groupFee = parseInt(group?.monthlyFee) || parseInt(group?.price) || 0;
     const defaultFee = parseInt(settings.defaultMonthlyFee) || 500000;
-    const monthlyFee = groupMonthlyFee > 0 ? groupMonthlyFee : defaultFee;
-
-    // Pro-rated hisob-kitob: o'quvchi oyning o'rtasida boshlagan bo'lsa
-    let billAmount = monthlyFee;
-    let isProrated = false;
-    if (student?.startDate) {
-      const startDate = new Date(student.startDate);
-      const startMonth = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}`;
-      if (startMonth === month) {
-        const [y, m] = month.split('-');
-        const daysInMonth = new Date(parseInt(y), parseInt(m), 0).getDate();
-        const startDay = startDate.getDate();
-        const remainingDays = daysInMonth - startDay + 1;
-        billAmount = Math.round(monthlyFee * remainingDays / daysInMonth);
-        isProrated = true;
-      }
-    }
+    const baseFee = groupFee > 0 ? groupFee : defaultFee;
+    const discount = parseInt(student?.discount) || 0;
+    const billAmount = discount > 0 ? Math.round(baseFee * (100 - discount) / 100) : baseFee;
 
     return {
       studentId,
-      month,
-      totalAmount: billAmount,
-      paidAmount: 0,
-      remainingAmount: billAmount,
-      status: 'pending',
-      payments: [],
-      isVirtual: true,
-      isProrated,
-      groupName: group?.name || '',
-      studentName: student?.fullName || ''
+      month: period.month,
+      periodStart: period.periodStart,
+      periodEnd: period.periodEnd,
+      periodDisplay: period.periodDisplay,
+      totalAmount: billAmount, paidAmount: 0, remainingAmount: billAmount,
+      status: 'pending', payments: [], isVirtual: true,
+      groupName: group?.name || '', studentName: student?.fullName || '',
     };
   };
 
-  // O'quvchining barcha oylik hisoblari
+  // O'quvchining barcha 12-dars davrlari uchun billlar
   const getStudentBills = (studentId) => {
-    const studentBills = monthlyBills.filter(b => b.studentId === studentId);
     const student = students.find(s => s.id === studentId);
-    const currentMonth = selectedMonth;
+    const dbBills = monthlyBills.filter(b => b.studentId === studentId);
 
-    // O'quvchi boshlagan oy
-    const startDate = student?.startDate ? new Date(student.startDate) : null;
-    const startMonth = startDate
-      ? `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}`
-      : currentMonth;
-
-    // startMonth dan currentMonth gacha barcha oylar uchun bill olish yoki yaratish
-    const allMonthBills = [];
-    const cursor = new Date(startMonth + '-01');
-    const endDate = new Date(currentMonth + '-01');
-
-    while (cursor <= endDate) {
-      const m = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
-      const existing = studentBills.find(b => b.month === m);
-      allMonthBills.push(existing || getOrCreateMonthlyBill(studentId, m));
-      cursor.setMonth(cursor.getMonth() + 1);
+    if (!student?.startDate) {
+      // startDate yo'q - faqat DB dan kelgan billlarni qaytaramiz
+      return dbBills.sort((a, b) => (b.periodStart || b.month).localeCompare(a.periodStart || a.month));
     }
 
-    // startMonth dan OLDINGI oylar: to'lanmagan DB qarzlar ham ko'rsatiladi
-    const olderUnpaidBills = studentBills
-      .filter(b => b.month < startMonth && (b.remainingAmount || 0) > 0);
+    const periods = getStudentPeriods(student);
+    if (periods.length === 0) return dbBills;
 
-    // To'langan eski oylar (oxirgi 2 ta, tarix uchun)
-    const olderPaidBills = studentBills
-      .filter(b => b.month < startMonth && b.status === 'paid')
-      .sort((a, b) => b.month.localeCompare(a.month))
-      .slice(0, 2);
+    // Har bir davr uchun bill olish yoki virtual yaratish
+    const periodBills = periods.map(period => getOrCreatePeriodBill(studentId, period));
 
-    const allBills = [...allMonthBills, ...olderUnpaidBills, ...olderPaidBills];
-
-    // Unique va tartiblash
-    const uniqueBills = allBills.filter((bill, index, self) =>
-      index === self.findIndex(b => b.month === bill.month)
+    // DB dan kelgan, lekin hech bir davrga kirmaydigan eski billlar (legacy)
+    const coveredKeys = new Set(periods.flatMap(p => [p.periodStart, p.month]));
+    const extraBills = dbBills.filter(b =>
+      !coveredKeys.has(b.periodStart) && !coveredKeys.has(b.month) && (b.remainingAmount || 0) > 0
     );
 
-    return uniqueBills.sort((a, b) => b.month.localeCompare(a.month));
+    return [...periodBills, ...extraBills]
+      .sort((a, b) => (b.periodStart || b.month).localeCompare(a.periodStart || a.month));
   };
 
-  // O'quvchi umumiy qarz (virtual billlarni ham hisobga oladi)
+  // O'quvchi umumiy qarz
   const getStudentTotalDebt = (studentId) => {
-    const allBills = getStudentBills(studentId);
-    return allBills
-      .filter(b => b.month <= selectedMonth)
+    return getStudentBills(studentId)
       .reduce((sum, b) => sum + (b.remainingAmount || 0), 0);
   };
 
-  // O'quvchi to'lov holati
+  // O'quvchi to'lov holati (joriy 12-dars davri asosida)
   const getStudentPaymentStatus = (student) => {
-    if (student.isFree) {
-      return { status: 'free', label: 'Bepul', color: 'info', debt: 0 };
-    }
-    const currentMonth = selectedMonth;
+    if (student.isFree) return { status: 'free', label: 'Bepul', color: 'info', debt: 0 };
 
-    // Barcha billlarni olish (virtual + DB, startDate dan currentMonth gacha)
+    const currentPeriod = getCurrentPeriod(student);
+    if (!currentPeriod) return { status: 'pending', label: 'Kutilmoqda', color: 'warning', debt: 0 };
+
     const allBills = getStudentBills(student.id);
 
-    // Tanlangan oy uchun bill
-    const currentBill = allBills.find(b => b.month === currentMonth)
-      || getOrCreateMonthlyBill(student.id, currentMonth);
+    const currentBill = allBills.find(b =>
+      (b.periodStart && b.periodStart === currentPeriod.periodStart) ||
+      (!b.periodStart && b.month === currentPeriod.month)
+    ) || getOrCreatePeriodBill(student.id, currentPeriod);
 
-    // O'tgan oylarning qarzi (virtual billlarni ham qo'shib)
+    // YYYY-MM ni YYYY-MM-01 ga o'tkazib solishtirish (aralash format muammosini hal qilish)
+    const toDateKey = (s) => s && s.length === 7 ? s + '-01' : (s || '');
+    const currentKey = toDateKey(currentPeriod.periodStart || currentPeriod.month);
     const pastDebt = allBills
-      .filter(b => b.month < currentMonth && (b.remainingAmount || 0) > 0)
+      .filter(b => toDateKey(b.periodStart || b.month) < currentKey)
       .reduce((sum, b) => sum + (b.remainingAmount || 0), 0);
 
     const currentDebt = currentBill.remainingAmount || 0;
 
     if (currentBill.status === 'paid') {
-      if (pastDebt > 0) {
-        return { status: 'debtor', label: 'Qarzdor', color: 'danger', debt: pastDebt };
-      }
+      if (pastDebt > 0) return { status: 'debtor', label: 'Qarzdor', color: 'danger', debt: pastDebt };
       return { status: 'paid', label: "To'langan", color: 'success', debt: 0 };
     }
-
     if (currentBill.status === 'partial') {
       return { status: 'partial', label: 'Qisman', color: 'warning', debt: currentDebt + pastDebt };
     }
-
     if (pastDebt > 0) {
       return { status: 'debtor', label: 'Qarzdor', color: 'danger', debt: currentDebt + pastDebt };
     }
-
     return { status: 'pending', label: 'Kutilmoqda', color: 'warning', debt: currentDebt };
   };
 
@@ -581,10 +621,11 @@ const Payments = () => {
       // Masalan: 350,000 to'landi, oylik 400,000 (500k - 20%) = 350,000 qarz yopiladi
       const debtCovered = paidAmount; // To'langan summa = yopilgan qarz
 
-      // Eng eski qarzdan boshlab to'lash
+      // Eng eski qarzdan boshlab to'lash (periodStart yoki month bo'yicha)
+      const toDateKey = (s) => s && s.length === 7 ? s + '-01' : (s || '');
       const bills = getStudentBills(selectedStudent.id)
         .filter(b => b.remainingAmount > 0)
-        .sort((a, b) => a.month.localeCompare(b.month));
+        .sort((a, b) => toDateKey(a.periodStart || a.month).localeCompare(toDateKey(b.periodStart || b.month)));
 
       let remainingPayment = debtCovered;
       const updatedBills = [];
@@ -629,8 +670,11 @@ const Payments = () => {
             groupId: student?.groupId || '',
             groupName: group?.name || '',
             month: bill.month,
-            totalAmount: billTotalWithDiscount, // Chegirmali narx
-            originalAmount: monthlyFee, // Asl narx
+            periodStart: bill.periodStart || null,
+            periodEnd: bill.periodEnd || null,
+            periodDisplay: bill.periodDisplay || null,
+            totalAmount: billTotalWithDiscount,
+            originalAmount: monthlyFee,
             paidAmount: newPaidAmount,
             remainingAmount: newRemainingAmount,
             status: newStatus,
@@ -797,9 +841,8 @@ const Payments = () => {
         if (selectedStudent.parentPhone) {
           try {
             const cleanPhone = selectedStudent.parentPhone.replace(/\D/g, '');
-            const parentEmail = `parent${cleanPhone}@edu.local`;
             const allUsers = await usersAPI.getAll();
-            const parentUser = allUsers.find(u => u.email === parentEmail || u.phone === selectedStudent.parentPhone);
+            const parentUser = allUsers.find(u => u.phone === selectedStudent.parentPhone || u.phone?.replace(/\D/g,'') === cleanPhone);
             if (parentUser) {
               await messagesAPI.create({
                 title: "💰 To'lov eslatmasi",
@@ -902,12 +945,17 @@ const Payments = () => {
         return;
       }
 
+      const periodStart = student?.startDate || billForm.month + '-01';
+      const periodEnd = addOneMonth(periodStart);
       const newBill = await paymentsAPI.createMonthlyBill({
         studentId: billForm.studentId,
         studentName: student?.fullName || '',
         groupId: student?.groupId || '',
         groupName: group?.name || '',
         month: billForm.month,
+        periodStart,
+        periodEnd,
+        periodDisplay: formatPeriodDisplay(periodStart, periodEnd),
         totalAmount: parseInt(billForm.totalAmount),
         paidAmount: 0,
         remainingAmount: parseInt(billForm.totalAmount),
@@ -927,33 +975,31 @@ const Payments = () => {
     }
   };
 
-  // Statistika
+  // Statistika (joriy 12-dars davrlari asosida)
   const getStats = () => {
-    const currentMonth = selectedMonth;
-
     let totalDebt = 0;
     let totalPaid = 0;
-    let debtors = 0;      // Qarz bor (to'lamagan)
-    let partialPaid = 0;  // Qisman to'lagan
-    let fullyPaid = 0;    // To'liq to'lagan
+    let debtors = 0;
+    let partialPaid = 0;
+    let fullyPaid = 0;
 
     students.forEach(student => {
       const status = getStudentPaymentStatus(student);
       totalDebt += status.debt;
+      if (status.status === 'paid') fullyPaid++;
+      else if (status.status === 'partial') partialPaid++;
+      else if (status.debt > 0) debtors++;
 
-      if (status.status === 'paid') {
-        fullyPaid++;
-      } else if (status.status === 'partial') {
-        partialPaid++;
-      } else if (status.debt > 0) {
-        // debtor yoki pending - qarz bor bo'lsa qarzdor
-        debtors++;
+      // Joriy davr uchun to'langan summa
+      const currentPeriod = getCurrentPeriod(student);
+      if (currentPeriod) {
+        const bill = monthlyBills.find(b =>
+          b.studentId === student.id &&
+          (b.periodStart === currentPeriod.periodStart || b.month === currentPeriod.month)
+        );
+        totalPaid += bill?.paidAmount || 0;
       }
     });
-
-    // Bu oyda to'langan summa
-    const currentMonthBills = monthlyBills.filter(b => b.month === currentMonth);
-    totalPaid = currentMonthBills.reduce((sum, b) => sum + (b.paidAmount || 0), 0);
 
     return { totalDebt, totalPaid, debtors, partialPaid, fullyPaid };
   };
@@ -1033,7 +1079,11 @@ const Payments = () => {
       for (const studentId of selectedStudentIds) {
         const student = students.find(s => s.id === studentId);
         if (!student) continue;
-        const bill = monthlyBills.find(b => b.studentId === studentId && b.month === selectedMonth);
+        const currentPeriod = getCurrentPeriod(student);
+        const bill = currentPeriod && monthlyBills.find(b =>
+          b.studentId === studentId &&
+          (b.periodStart === currentPeriod.periodStart || b.month === currentPeriod.month)
+        );
         if (bill && bill.status !== 'paid') {
           const remaining = bill.remainingAmount || bill.totalAmount || 0;
           if (remaining > 0) {
@@ -1123,12 +1173,17 @@ const Payments = () => {
     const teacherGroups = groups;
     const totalStudents = students.length;
     
-    // Guruhlar bo'yicha REJALI daromad (barcha o'quvchilar to'lasa)
+    // Guruhlar bo'yicha REJALI daromad (har bir o'quvchi uchun skidka hisobga olinadi)
     let plannedIncome = 0;
+    const defaultFeeForTeacher = parseInt(settings.defaultMonthlyFee) || 500000;
     teacherGroups.forEach(group => {
-      const groupStudents = students.filter(s => s.groupId === group.id);
-      const monthlyFee = parseInt(group.monthlyFee) || parseInt(group.price) || 0;
-      plannedIncome += groupStudents.length * monthlyFee;
+      const groupStudents = students.filter(s => s.groupId === group.id && !s.isFree);
+      const baseFee = parseInt(group.monthlyFee) || parseInt(group.price) || defaultFeeForTeacher;
+      groupStudents.forEach(student => {
+        const discount = parseInt(student.discount) || 0;
+        const studentFee = discount > 0 ? Math.round(baseFee * (100 - discount) / 100) : baseFee;
+        plannedIncome += studentFee;
+      });
     });
     
     // HAQIQIY yig'ilgan pul (bu oy to'langan)
@@ -1236,7 +1291,9 @@ const Payments = () => {
               studentBills.map((bill, index) => (
                 <Card key={index} padding="p-4">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="font-medium">{getMonthName(bill.month)}</span>
+                    <span className="font-medium">
+                      {bill.periodDisplay || getMonthName(bill.month)}
+                    </span>
                     <Badge variant={
                       bill.status === 'paid' ? 'success' : 
                       bill.status === 'partial' ? 'warning' : 'danger'
@@ -1409,80 +1466,79 @@ const Payments = () => {
 
       {/* ===== AUTO-REMINDER PANEL ===== */}
       {isAdmin && pendingReminders.length > 0 && !reminderDismissed && (
-        <div className="bg-amber-50 border border-amber-300 rounded-xl p-4">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex items-start gap-3">
-              <div className="flex-shrink-0 w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center mt-0.5">
-                <Bell className="w-5 h-5 text-amber-600" />
-              </div>
-              <div>
-                <p className="font-semibold text-amber-900">
-                  {pendingReminders.length} ta o'quvchiga to'lov eslatmasi yuborilmagan
-                </p>
-                <p className="text-sm text-amber-700 mt-0.5">
-                  Bugun to'lov muddati yaqinlashgan yoki o'tib ketgan o'quvchilar
-                  {settings.telegramBotToken
-                    ? ` — Telegram ulangan o'quvchilarga bot orqali yuboriladi`
-                    : ` — faqat tizim ichida xabar yuboriladi`}
-                </p>
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 space-y-3">
+          {/* Sarlavha */}
+          <div className="flex items-start gap-3">
+            <div className="flex-shrink-0 w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center mt-0.5">
+              <Bell className="w-5 h-5 text-amber-600" />
+            </div>
+            <div>
+              <p className="font-semibold text-amber-900">
+                {pendingReminders.length} ta o'quvchiga to'lov eslatmasi yuborilmagan
+              </p>
+              <p className="text-sm text-amber-700 mt-0.5">
+                {settings.telegramBotToken
+                  ? "Telegram ulangan o'quvchilarga bot orqali yuboriladi"
+                  : "Faqat tizim ichida xabar yuboriladi"}
+              </p>
+            </div>
+          </div>
 
-                {/* Preview list — max 5 */}
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {pendingReminders.slice(0, 5).map(s => (
-                    <span key={s.id} className="inline-flex items-center gap-1 text-xs bg-white border border-amber-200 rounded-full px-2.5 py-1 text-amber-800">
-                      {s.fullName}
-                      <span className="text-amber-500 font-medium">
-                        {Number(s.debt).toLocaleString()} so'm
-                      </span>
-                      {s.parentTelegramChatId && settings.telegramBotToken && (
-                        <Send className="w-3 h-3 text-blue-500 ml-0.5" />
-                      )}
-                    </span>
-                  ))}
-                  {pendingReminders.length > 5 && (
-                    <span className="text-xs text-amber-600 self-center">
-                      + {pendingReminders.length - 5} ta
-                    </span>
+          {/* O'quvchilar ro'yxati */}
+          <div className="bg-white border border-amber-200 rounded-lg divide-y divide-amber-100">
+            {pendingReminders.slice(0, 5).map(s => (
+              <div key={s.id} className="flex items-center justify-between px-3 py-2">
+                <span className="text-sm font-medium text-amber-900">{s.fullName}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold text-red-600 whitespace-nowrap">
+                    {Number(s.debt).toLocaleString()} so'm
+                  </span>
+                  {s.parentTelegramChatId && settings.telegramBotToken && (
+                    <Send className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
                   )}
                 </div>
+              </div>
+            ))}
+            {pendingReminders.length > 5 && (
+              <div className="px-3 py-2 text-sm text-amber-600">
+                + {pendingReminders.length - 5} ta boshqa
+              </div>
+            )}
+          </div>
 
-                {/* Progress bar while sending */}
-                {autoProgress && (
-                  <div className="mt-3">
-                    <div className="flex justify-between text-xs text-amber-700 mb-1">
-                      <span>Yuborilmoqda...</span>
-                      <span>{autoProgress.done}/{autoProgress.total}</span>
-                    </div>
-                    <div className="w-full bg-amber-200 rounded-full h-1.5">
-                      <div
-                        className="bg-amber-500 h-1.5 rounded-full transition-all duration-300"
-                        style={{ width: `${(autoProgress.done / autoProgress.total) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
+          {/* Progress */}
+          {autoProgress && (
+            <div>
+              <div className="flex justify-between text-xs text-amber-700 mb-1">
+                <span>Yuborilmoqda...</span>
+                <span>{autoProgress.done}/{autoProgress.total}</span>
+              </div>
+              <div className="w-full bg-amber-200 rounded-full h-1.5">
+                <div
+                  className="bg-amber-500 h-1.5 rounded-full transition-all duration-300"
+                  style={{ width: `${(autoProgress.done / autoProgress.total) * 100}%` }}
+                />
               </div>
             </div>
+          )}
 
-            {/* Action buttons */}
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                onClick={() => setReminderDismissed(true)}
-                className="text-amber-500 hover:text-amber-700 text-sm px-2 py-1"
-                disabled={autoSending}
-              >
-                Keyinroq
-              </button>
-              <Button
-                size="sm"
-                loading={autoSending}
-                onClick={handleSendAllReminders}
-                className="bg-amber-500 hover:bg-amber-600 text-white border-0"
-              >
-                <Send className="w-4 h-4 mr-1.5" />
-                Barchasiga yuborish
-              </Button>
-            </div>
+          {/* Tugmalar */}
+          <div className="flex gap-2">
+            <button
+              onClick={() => setReminderDismissed(true)}
+              className="flex-1 text-amber-700 bg-amber-100 hover:bg-amber-200 text-sm font-medium px-3 py-2 rounded-lg transition"
+              disabled={autoSending}
+            >
+              Keyinroq
+            </button>
+            <Button
+              loading={autoSending}
+              onClick={handleSendAllReminders}
+              className="flex-1 bg-amber-500 hover:bg-amber-600 text-white border-0"
+            >
+              <Send className="w-4 h-4 mr-1.5" />
+              Barchasiga
+            </Button>
           </div>
         </div>
       )}
@@ -1564,32 +1620,27 @@ const Payments = () => {
             />
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Oy tanlash */}
+          <div className="grid grid-cols-2 md:flex md:flex-wrap gap-2">
             <input
               type="month"
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(e.target.value)}
-              className="px-3 py-2 border rounded-lg text-sm"
+              className="col-span-2 md:col-span-1 px-3 py-2 border rounded-lg text-base md:text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100"
             />
-
-            {/* Guruh filteri */}
             <select
               value={filterGroup}
               onChange={(e) => setFilterGroup(e.target.value)}
-              className="px-3 py-2 border rounded-lg text-sm"
+              className="px-3 py-2 border rounded-lg text-base md:text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100"
             >
               <option value="all">Barcha guruhlar</option>
               {groups.map(g => (
                 <option key={g.id} value={g.id}>{g.name}</option>
               ))}
             </select>
-
-            {/* Status filteri */}
             <select
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value)}
-              className="px-3 py-2 border rounded-lg text-sm"
+              className="px-3 py-2 border rounded-lg text-base md:text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100"
             >
               <option value="all">Barchasi</option>
               <option value="paid">To'langan</option>
@@ -1647,15 +1698,16 @@ const Payments = () => {
           const bills = getStudentBills(student.id);
           const isExpanded = expandedStudents[student.id];
           const isChecked = selectedStudentIds.has(student.id);
+          const currentPeriod = getCurrentPeriod(student);
 
           return (
             <Card key={student.id} className={`overflow-hidden ${isChecked ? 'ring-2 ring-primary-400' : ''}`}>
               {/* Asosiy qator */}
               <div
-                className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50"
+                className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50 gap-3"
                 onClick={() => toggleStudentExpand(student.id)}
               >
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
                   {isAdmin && status.debt > 0 && (
                     <button
                       onClick={(e) => { e.stopPropagation(); toggleBulkSelect(student.id); }}
@@ -1666,26 +1718,21 @@ const Payments = () => {
                         : <Square className="w-4 h-4 text-gray-400" />}
                     </button>
                   )}
-                  <Avatar name={student.fullName} size="md" />
-                  <div>
+                  <Avatar name={student.fullName} size="md" className="flex-shrink-0" />
+                  <div className="min-w-0 flex-1">
                     <h3 className="font-semibold">{student.fullName}</h3>
                     <p className="text-sm text-gray-500">{group?.name || 'Guruhsiz'}</p>
+                    {status.debt > 0 && (
+                      <p className="text-sm font-bold text-red-600 mt-0.5">{formatMoney(status.debt)} qarz</p>
+                    )}
+                    {student.isFree && (
+                      <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full inline-block mt-0.5">Bepul</span>
+                    )}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-4">
-                  {student.isFree && (
-                    <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Bepul</span>
-                  )}
-                  {status.debt > 0 && (
-                    <div className="text-right">
-                      <p className="text-lg font-bold text-red-600">{formatMoney(status.debt)}</p>
-                      <p className="text-xs text-gray-500">Qarz</p>
-                    </div>
-                  )}
-                  
+                <div className="flex items-center gap-2 flex-shrink-0">
                   <Badge variant={status.color}>{status.label}</Badge>
-                  
                   {isExpanded ? (
                     <ChevronUp className="w-5 h-5 text-gray-400" />
                   ) : (
@@ -1699,28 +1746,44 @@ const Payments = () => {
                 <div className="border-t bg-gray-50 p-4">
                   {/* Oylik hisoblar */}
                   <div className="mb-4">
-                    <h4 className="font-medium text-sm text-gray-700 mb-2">Oylik hisoblar</h4>
+                    <h4 className="font-medium text-sm text-gray-700 mb-2">To'lov davrlari</h4>
                     <div className="space-y-2">
-                      {bills.map((bill, idx) => (
-                        <div 
+                      {bills.map((bill, idx) => {
+                        const isCurrentPeriod = currentPeriod && (
+                          bill.periodStart === currentPeriod.periodStart ||
+                          (!bill.periodStart && bill.month === currentPeriod.month)
+                        );
+                        return (
+                        <div
                           key={idx}
-                          className={`flex items-center justify-between p-3 rounded-lg ${
+                          className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 rounded-lg ${
+                            isCurrentPeriod ? 'ring-2 ring-primary-400 ' : ''
+                          }${
                             bill.status === 'paid' ? 'bg-green-50 border border-green-200' :
                             bill.status === 'partial' ? 'bg-yellow-50 border border-yellow-200' :
                             'bg-white border border-gray-200'
                           }`}
                         >
                           <div className="flex items-center gap-3">
-                            <Calendar className="w-4 h-4 text-gray-400" />
+                            <Calendar className={`w-4 h-4 ${isCurrentPeriod ? 'text-primary-500' : 'text-gray-400'}`} />
                             <div>
-                              <span className="font-medium">{getMonthName(bill.month)}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">
+                                  {bill.periodDisplay || getMonthName(bill.month)}
+                                </span>
+                                {isCurrentPeriod && (
+                                  <span className="text-xs bg-primary-100 text-primary-700 px-1.5 py-0.5 rounded font-medium">
+                                    Joriy davr
+                                  </span>
+                                )}
+                              </div>
                               {bill.appliedDiscount > 0 && (
-                                <span className="ml-2 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
+                                <span className="mr-1 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
                                   -{bill.appliedDiscount}% skidka
                                 </span>
                               )}
                               {bill.isProrated && (
-                                <span className="ml-2 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
+                                <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
                                   Kunlik hisob
                                 </span>
                               )}
@@ -1755,8 +1818,8 @@ const Payments = () => {
                             </div>
 
                             {bill.payments?.length > 0 && (
-                              <Button 
-                                size="sm" 
+                              <Button
+                                size="sm"
                                 variant="outline"
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -1769,26 +1832,28 @@ const Payments = () => {
                             )}
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
 
                   {/* Tugmalar */}
-                  {isAdmin && status.debt > 0 && (
-                    <div className="flex gap-2">
-                      <Button 
+                  {isAdmin && !student.isFree && (
+                    <div className="flex gap-2 mt-1">
+                      <Button
                         onClick={(e) => {
                           e.stopPropagation();
                           setSelectedStudent(student);
-                          setPaymentForm({ ...paymentForm, amount: '' });
+                          setPaymentForm({ ...paymentForm, amount: status.debt > 0 ? String(status.debt) : '' });
                           setShowPaymentModal(true);
                         }}
                         className="flex-1"
+                        variant={status.debt > 0 ? 'primary' : 'outline'}
                       >
                         <Plus className="w-4 h-4 mr-2" />
-                        To'lov
+                        {status.debt > 0 ? `To'lov (${formatMoney(status.debt)})` : "To'lov"}
                       </Button>
-                      <Button 
+                      <Button
                         variant="outline"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -2130,10 +2195,13 @@ const Payments = () => {
             onChange={(e) => {
               const student = students.find(s => s.id === e.target.value);
               const group = groups.find(g => g.id === student?.groupId);
-              setBillForm({ 
-                ...billForm, 
+              const baseFee = parseInt(group?.monthlyFee) || parseInt(group?.price) || parseInt(settings.defaultMonthlyFee) || 500000;
+              const discount = parseInt(student?.discount) || 0;
+              const amount = discount > 0 ? Math.round(baseFee * (100 - discount) / 100) : baseFee;
+              setBillForm({
+                ...billForm,
                 studentId: e.target.value,
-                totalAmount: group?.monthlyFee || settings.defaultMonthlyFee || '500000'
+                totalAmount: amount.toString()
               });
             }}
             options={students.map(s => ({ value: s.id, label: s.fullName }))}
@@ -2157,6 +2225,20 @@ const Payments = () => {
             placeholder="500000"
             required
           />
+
+          {(() => {
+            const student = students.find(s => s.id === billForm.studentId);
+            const discount = parseInt(student?.discount) || 0;
+            if (!student || !discount) return null;
+            const group = groups.find(g => g.id === student?.groupId);
+            const baseFee = parseInt(group?.monthlyFee) || parseInt(group?.price) || parseInt(settings.defaultMonthlyFee) || 500000;
+            return (
+              <div className="text-sm bg-blue-50 text-blue-800 p-3 rounded-lg">
+                Guruh narxi: <span className="line-through text-gray-500">{formatMoney(baseFee)}</span>
+                {' → '}<strong>{discount}% chegirma</strong> bilan: {formatMoney(Math.round(baseFee * (100 - discount) / 100))}
+              </div>
+            );
+          })()}
 
           <div className="flex gap-2 pt-4 border-t">
             <Button type="submit" className="flex-1" loading={formLoading}>

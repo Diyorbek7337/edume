@@ -10,6 +10,7 @@ import { ROLES } from '../utils/constants';
 import { toast } from 'react-toastify';
 import { activityLogAPI, LOG_ACTIONS } from '../services/activityLog';
 import { useAuth } from '../contexts/AuthContext';
+import { metaConversions } from '../services/metaConversions';
 
 const LEAD_STATUS = {
   NEW: 'new',
@@ -36,6 +37,11 @@ const Leads = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
+  const [filterDateField, setFilterDateField] = useState('createdAt');
+  const [filterSubject, setFilterSubject] = useState('');
+  const [filterSource, setFilterSource] = useState('');
   
   // Modals
   const [showAddModal, setShowAddModal] = useState(false);
@@ -90,7 +96,21 @@ const Leads = () => {
   const filteredLeads = leads.filter(l => {
     const matchesSearch = l.fullName?.toLowerCase().includes(searchQuery.toLowerCase()) || l.phone?.includes(searchQuery);
     const matchesStatus = !filterStatus || l.status === filterStatus;
-    return matchesSearch && matchesStatus;
+
+    let matchesDate = true;
+    if (filterDateFrom || filterDateTo) {
+      const rawDate = l[filterDateField];
+      const dateStr = rawDate?.toDate ? rawDate.toDate().toISOString().split('T')[0]
+        : rawDate ? rawDate.split('T')[0] : null;
+      if (!dateStr) return false;
+      if (filterDateFrom && dateStr < filterDateFrom) matchesDate = false;
+      if (filterDateTo && dateStr > filterDateTo) matchesDate = false;
+    }
+
+    const matchesSubject = !filterSubject || l.subject === filterSubject;
+    const matchesSource = !filterSource || l.source === filterSource;
+
+    return matchesSearch && matchesStatus && matchesDate && matchesSubject && matchesSource;
   });
 
   const stats = {
@@ -116,10 +136,16 @@ const Leads = () => {
     setFormErrors({});
     setFormLoading(true);
     try {
-      const newLead = await leadsAPI.create({ ...formData, status: LEAD_STATUS.NEW });
+      const newLead = await leadsAPI.create({ ...formData, status: LEAD_STATUS.NEW, createdAt: new Date().toISOString(), statusChangedAt: new Date().toISOString() });
       setLeads([newLead, ...leads]);
       setShowAddModal(false);
       resetForm();
+
+      metaConversions.trackLead({
+        email: formData.email,
+        phone: formData.phone,
+        leadId: newLead.metaLeadId,
+      });
 
       activityLogAPI.log({
         action: LOG_ACTIONS.LEAD_ADDED.key,
@@ -157,7 +183,7 @@ const Leads = () => {
 
     // Oddiy status o'zgartirish
     try {
-      await leadsAPI.update(lead.id, { status: newStatus });
+      await leadsAPI.update(lead.id, { status: newStatus, statusChangedAt: new Date().toISOString() });
       setLeads(leads.map(l => l.id === lead.id ? { ...l, status: newStatus } : l));
       activityLogAPI.log({
         action: LOG_ACTIONS.LEAD_STATUS_CHANGED.key,
@@ -177,6 +203,7 @@ const Leads = () => {
         status: LEAD_STATUS.CONTACTED,
         contactNote: contactNote.trim(),
         contactedAt: new Date().toISOString(),
+        statusChangedAt: new Date().toISOString(),
       };
       await leadsAPI.update(selectedLead.id, updateData);
       setLeads(leads.map(l => l.id === selectedLead.id ? { ...l, ...updateData } : l));
@@ -204,7 +231,7 @@ const Leads = () => {
       const parentTelegram = convertData.parentTelegram || parentCleanPhone;
       
       // 1. O'quvchi yaratish
-      const studentEmail = `student${cleanPhone}@edu.local`;
+      const studentEmail = `${cleanPhone}@student.edu`;
       const generatePassword = () => {
         const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
         return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
@@ -242,7 +269,7 @@ const Leads = () => {
       
       // Agar ota-ona telefoni bo'lsa, ota-ona akkaunti yaratish
       const parentPhone = convertData.parentPhone || selectedLead.phone;
-      const parentEmail = `parent${parentCleanPhone}@edu.local`;
+      const parentEmail = `${parentCleanPhone}@parent.edu`;
       try {
         await usersAPI.create({
           fullName: convertData.parentName || `${selectedLead.fullName} (ota-ona)`,
@@ -264,11 +291,12 @@ const Leads = () => {
       });
       
       // 2. Lid statusini yangilash
-      await leadsAPI.update(selectedLead.id, { 
+      await leadsAPI.update(selectedLead.id, {
         status: LEAD_STATUS.CONVERTED,
         convertedGroupId: convertData.groupId,
         convertedGroupName: group?.name,
-        convertedAt: new Date().toISOString()
+        convertedAt: new Date().toISOString(),
+        statusChangedAt: new Date().toISOString()
       });
       
       setLeads(leads.map(l => l.id === selectedLead.id ? { 
@@ -277,6 +305,11 @@ const Leads = () => {
         convertedGroupName: group?.name
       } : l));
       
+      metaConversions.trackRegistration({
+        email: selectedLead.email,
+        phone: selectedLead.phone,
+      });
+
       setShowConvertModal(false);
       resetForm();
       setCreatedCredentials({ studentEmail, defaultPassword, parentEmail, parentDefaultPassword });
@@ -298,12 +331,13 @@ const Leads = () => {
     setFormLoading(true);
     try {
       const group = groups.find(g => g.id === trialData.groupId);
-      await leadsAPI.update(selectedLead.id, { 
+      await leadsAPI.update(selectedLead.id, {
         status: LEAD_STATUS.TRIAL,
         trialGroupId: trialData.groupId,
         trialGroupName: group?.name,
         trialDate: trialData.trialDate,
-        trialTime: trialData.trialTime || group?.schedule?.time
+        trialTime: trialData.trialTime || group?.schedule?.time,
+        statusChangedAt: new Date().toISOString(),
       });
       
       setLeads(leads.map(l => l.id === selectedLead.id ? { 
@@ -329,10 +363,11 @@ const Leads = () => {
     }
     setFormLoading(true);
     try {
-      await leadsAPI.update(selectedLead.id, { 
+      await leadsAPI.update(selectedLead.id, {
         status: LEAD_STATUS.LOST,
         lostReason: lostReason,
-        lostAt: new Date().toISOString()
+        lostAt: new Date().toISOString(),
+        statusChangedAt: new Date().toISOString(),
       });
       
       setLeads(leads.map(l => l.id === selectedLead.id ? { 
@@ -498,31 +533,103 @@ const Leads = () => {
 
       {/* Filters */}
       <Card padding="p-4">
-        <div className="flex flex-col md:flex-row gap-4">
-          <button
-            onClick={toggleSelectAllLeads}
-            className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 hover:text-primary-600 transition flex-shrink-0 px-2"
-            title={allLeadsSelected ? "Hammasini bekor qilish" : "Hammasini tanlash"}
-          >
-            {allLeadsSelected
-              ? <CheckSquare className="w-5 h-5 text-primary-600" />
-              : <Square className="w-5 h-5" />
-            }
-            <span className="hidden md:inline">
-              {allLeadsSelected ? 'Bekor qilish' : `Hammasini tanlash (${filteredLeads.length})`}
-            </span>
-          </button>
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-            <input
-              type="text"
-              placeholder="Qidirish..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
-            />
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col md:flex-row gap-3">
+            <button
+              onClick={toggleSelectAllLeads}
+              className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 hover:text-primary-600 transition flex-shrink-0 px-2"
+              title={allLeadsSelected ? "Hammasini bekor qilish" : "Hammasini tanlash"}
+            >
+              {allLeadsSelected
+                ? <CheckSquare className="w-5 h-5 text-primary-600" />
+                : <Square className="w-5 h-5" />
+              }
+              <span className="hidden md:inline">
+                {allLeadsSelected ? 'Bekor qilish' : `Hammasini tanlash (${filteredLeads.length})`}
+              </span>
+            </button>
+            <div className="flex-1 relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Qidirish..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+              />
+            </div>
+            <Select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} options={Object.entries(STATUS_CONFIG).map(([k, v]) => ({ value: k, label: v.label }))} placeholder="Barcha holatlar" className="w-full md:w-48" />
           </div>
-          <Select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} options={Object.entries(STATUS_CONFIG).map(([k, v]) => ({ value: k, label: v.label }))} placeholder="Barcha holatlar" className="w-full md:w-48" />
+
+          {/* Fan va manba filtri */}
+          <div className="flex flex-col md:flex-row gap-3 pt-1 border-t border-gray-100 dark:border-gray-700">
+            <select
+              value={filterSubject}
+              onChange={(e) => setFilterSubject(e.target.value)}
+              className="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 text-sm"
+            >
+              <option value="">Barcha fanlar</option>
+              {[...new Set(leads.map(l => l.subject).filter(Boolean))].sort().map(s => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+            <select
+              value={filterSource}
+              onChange={(e) => setFilterSource(e.target.value)}
+              className="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 text-sm"
+            >
+              <option value="">Barcha manbalar</option>
+              {[...new Set(leads.map(l => l.source).filter(Boolean))].sort().map(s => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+            {(filterSubject || filterSource) && (
+              <button
+                onClick={() => { setFilterSubject(''); setFilterSource(''); }}
+                className="px-3 py-2 text-sm text-red-500 hover:text-red-700 transition flex-shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Sana filtri */}
+          <div className="flex flex-col md:flex-row gap-3 items-center pt-1 border-t border-gray-100 dark:border-gray-700">
+            <select
+              value={filterDateField}
+              onChange={(e) => setFilterDateField(e.target.value)}
+              className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 text-sm w-full md:w-52"
+            >
+              <option value="createdAt">Qo'shilgan sana</option>
+              <option value="statusChangedAt">Status o'zgargan sana</option>
+            </select>
+            <div className="flex gap-2 flex-1 items-center">
+              <input
+                type="date"
+                value={filterDateFrom}
+                onChange={(e) => setFilterDateFrom(e.target.value)}
+                className="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 text-sm"
+                placeholder="Dan"
+              />
+              <span className="text-gray-400 text-sm">—</span>
+              <input
+                type="date"
+                value={filterDateTo}
+                onChange={(e) => setFilterDateTo(e.target.value)}
+                className="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 text-sm"
+                placeholder="Gacha"
+              />
+              {(filterDateFrom || filterDateTo) && (
+                <button
+                  onClick={() => { setFilterDateFrom(''); setFilterDateTo(''); }}
+                  className="p-2 text-gray-400 hover:text-red-500 transition"
+                  title="Tozalash"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </Card>
 
@@ -584,6 +691,18 @@ const Leads = () => {
                   {lead.contactNote && (
                     <p className="mt-1 text-blue-600">📝 {lead.contactNote}</p>
                   )}
+                  <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700 space-y-0.5">
+                    {lead.createdAt && (
+                      <p className="text-xs text-gray-400">
+                        🕐 Qo'shilgan: {formatDate(lead.createdAt?.toDate ? lead.createdAt.toDate().toISOString() : lead.createdAt)}
+                      </p>
+                    )}
+                    {lead.statusChangedAt && (
+                      <p className="text-xs text-gray-400">
+                        🔄 Status: {formatDate(lead.statusChangedAt)}
+                      </p>
+                    )}
+                  </div>
                 </div>
 
                 {/* Actions */}

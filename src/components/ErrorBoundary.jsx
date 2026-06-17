@@ -12,6 +12,10 @@ class ErrorBoundary extends Component {
 
   componentDidCatch(error, info) {
     console.error('ErrorBoundary caught:', error, info.componentStack);
+    // Sentry'ga yuborish
+    import('../services/sentry').then(({ captureError }) => {
+      captureError(error, { componentStack: info.componentStack });
+    });
   }
 
   render() {

@@ -1,70 +1,76 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Mail, Lock, GraduationCap, ArrowLeft } from 'lucide-react';
+import { Phone, Lock, GraduationCap, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { Button, Input, Card } from '../common';
-import { doc, getDoc } from 'firebase/firestore';
-import { db, auth } from '../../services/firebase';
-import { sendPasswordResetEmail } from 'firebase/auth';
+import { Button, Card } from '../common';
+
+// Phone input → possible email candidates (student first, then parent, then direct email)
+const resolveEmailCandidates = (input) => {
+  const trimmed = input.trim();
+  if (trimmed.includes('@')) return [trimmed];
+
+  const digits = trimmed.replace(/\D/g, '');
+  let phone = digits;
+  if (digits.length === 9) phone = '998' + digits;
+  else if (digits.length === 10 && digits.startsWith('0')) phone = '998' + digits.slice(1);
+
+  // Try new format first, then old format for backward compat
+  return [`${phone}@student.edu`, `${phone}@parent.edu`, `parent${phone}@edu.local`];
+};
+
+const CREDENTIAL_ERRORS = new Set([
+  'auth/invalid-credential',
+  'auth/user-not-found',
+  'auth/wrong-password',
+]);
 
 const Login = () => {
-  const [email, setEmail] = useState('');
+  const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [showForgot, setShowForgot] = useState(false);
-  const [forgotEmail, setForgotEmail] = useState('');
-  const [forgotLoading, setForgotLoading] = useState(false);
-  const [forgotSuccess, setForgotSuccess] = useState(false);
-  const [forgotError, setForgotError] = useState('');
   const { signIn } = useAuth();
   const navigate = useNavigate();
 
-  const handleForgotPassword = async (e) => {
-    e.preventDefault();
-    setForgotError('');
-    setForgotLoading(true);
-    try {
-      await sendPasswordResetEmail(auth, forgotEmail);
-      setForgotSuccess(true);
-    } catch (err) {
-      if (err.code === 'auth/user-not-found') setForgotError('Bu email bilan foydalanuvchi topilmadi');
-      else if (err.code === 'auth/invalid-email') setForgotError("Email formati noto'g'ri");
-      else setForgotError("Xatolik yuz berdi, qayta urinib ko'ring");
-    } finally {
-      setForgotLoading(false);
-    }
-  };
+  const isPhoneInput = !login.includes('@');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
-    try {
-      const result = await signIn(email, password);
-      
-      // Role ni tekshirish va to'g'ri joyga yo'naltirish
-      const userDoc = await getDoc(doc(db, 'users', result.user.uid));
-      if (userDoc.exists()) {
-        const userData = userDoc.data();
-        if (userData.role === 'super_admin') {
+    const trimmed = login.trim();
+    if (trimmed.includes('@') && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmed)) {
+      setError("Email format noto'g'ri. Masalan: admin@email.com");
+      setLoading(false);
+      return;
+    }
+
+    const candidates = resolveEmailCandidates(login);
+    let lastErr = null;
+
+    for (const candidate of candidates) {
+      try {
+        const result = await signIn(candidate, password);
+        if (result.role === 'super_admin') {
           navigate('/super-admin');
         } else {
           navigate('/dashboard');
         }
-      } else {
-        navigate('/dashboard');
+        return;
+      } catch (err) {
+        lastErr = err;
+        if (!CREDENTIAL_ERRORS.has(err.code)) break;
       }
-    } catch (err) {
-      if (err.code === 'auth/user-not-found') setError('Bunday foydalanuvchi topilmadi');
-      else if (err.code === 'auth/wrong-password') setError("Parol noto'g'ri");
-      else if (err.code === 'auth/invalid-email') setError("Email formati noto'g'ri");
-      else if (err.code === 'auth/invalid-credential') setError("Email yoki parol noto'g'ri");
-      else setError('Kirishda xatolik yuz berdi');
-    } finally {
-      setLoading(false);
     }
+
+    if (CREDENTIAL_ERRORS.has(lastErr?.code)) {
+      setError(isPhoneInput ? "Telefon raqam yoki parol noto'g'ri" : "Email yoki parol noto'g'ri");
+    } else {
+      setError("Kirishda xatolik yuz berdi");
+    }
+    setLoading(false);
   };
 
   return (
@@ -79,102 +85,83 @@ const Login = () => {
         </div>
 
         <Card>
-          {!showForgot ? (
-            <>
-              <h2 className="text-xl font-semibold text-gray-900 mb-6 text-center">Tizimga kirish</h2>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                {error && (
-                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-600 text-sm">
-                    {error}
-                  </div>
-                )}
-                <Input
-                  label="Email"
-                  type="email"
-                  placeholder="email@example.com"
-                  icon={Mail}
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+          <h2 className="text-xl font-semibold text-gray-900 mb-6 text-center">Tizimga kirish</h2>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {error && (
+              <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-600 text-sm">
+                {error}
+              </div>
+            )}
+
+            {/* Login field — phone or email */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Telefon yoki Email
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <Phone className="w-4 h-4 text-gray-400" />
+                </div>
+                <input
+                  type="text"
+                  inputMode="text"
+                  placeholder="901234567"
+                  value={login}
+                  onChange={(e) => setLogin(e.target.value)}
                   required
+                  className="w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                 />
-                <Input
-                  label="Parol"
-                  type="password"
+              </div>
+              <p className="text-xs text-gray-400 mt-1">
+                Masalan: 901234567 yoki admin@email.com
+              </p>
+            </div>
+
+            {/* Password field */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Parol
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <Lock className="w-4 h-4 text-gray-400" />
+                </div>
+                <input
+                  type={showPassword ? 'text' : 'password'}
                   placeholder="••••••••"
-                  icon={Lock}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
+                  className="w-full pl-9 pr-10 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                 />
-                <div className="flex justify-end">
-                  <button
-                    type="button"
-                    onClick={() => { setShowForgot(true); setForgotEmail(email); setForgotSuccess(false); setForgotError(''); }}
-                    className="text-sm text-primary-600 hover:underline"
-                  >
-                    Parolni unutdingizmi?
-                  </button>
-                </div>
-                <Button type="submit" loading={loading} className="w-full">
-                  Kirish
-                </Button>
-              </form>
-              <div className="mt-6 pt-6 border-t text-center">
-                <p className="text-gray-600 text-sm">
-                  O'quv markazingiz yo'qmi?{' '}
-                  <Link to="/register" className="text-primary-600 hover:underline font-semibold">
-                    Ro'yxatdan o'ting
-                  </Link>
-                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(v => !v)}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => { setShowForgot(false); setForgotSuccess(false); setForgotError(''); }}
-                className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-4"
-              >
-                <ArrowLeft className="w-4 h-4" /> Orqaga
-              </button>
-              <h2 className="text-xl font-semibold text-gray-900 mb-2">Parolni tiklash</h2>
-              <p className="text-sm text-gray-500 mb-6">
-                Emailingizni kiriting, tiklash havolasini yuboramiz.
-              </p>
-              {forgotSuccess ? (
-                <div className="p-4 rounded-lg bg-green-50 border border-green-200 text-green-700 text-sm text-center">
-                  <p className="font-semibold mb-1">Havola yuborildi!</p>
-                  <p>{forgotEmail} manziliga parol tiklash havolasi yuborildi. Inbox yoki spam papkasini tekshiring.</p>
-                  <button
-                    onClick={() => { setShowForgot(false); setForgotSuccess(false); }}
-                    className="mt-3 text-primary-600 hover:underline font-medium"
-                  >
-                    Kirish sahifasiga qaytish
-                  </button>
-                </div>
-              ) : (
-                <form onSubmit={handleForgotPassword} className="space-y-4">
-                  {forgotError && (
-                    <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-600 text-sm">
-                      {forgotError}
-                    </div>
-                  )}
-                  <Input
-                    label="Email"
-                    type="email"
-                    placeholder="email@example.com"
-                    icon={Mail}
-                    value={forgotEmail}
-                    onChange={(e) => setForgotEmail(e.target.value)}
-                    required
-                  />
-                  <Button type="submit" loading={forgotLoading} className="w-full">
-                    Tiklash havolasini yuborish
-                  </Button>
-                </form>
-              )}
-            </>
-          )}
+            </div>
+
+            {/* Forgot password hint */}
+            <p className="text-xs text-gray-400 text-right">
+              Parolni unutdingizmi? Administrator bilan bog'laning.
+            </p>
+
+            <Button type="submit" loading={loading} className="w-full">
+              Kirish
+            </Button>
+          </form>
+
+          <div className="mt-6 pt-6 border-t text-center">
+            <p className="text-gray-600 text-sm">
+              O'quv markazingiz yo'qmi?{' '}
+              <Link to="/register" className="text-primary-600 hover:underline font-semibold">
+                Ro'yxatdan o'ting
+              </Link>
+            </p>
+          </div>
         </Card>
 
         <p className="text-center text-primary-200 text-sm mt-6">

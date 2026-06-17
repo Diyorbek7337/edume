@@ -3,12 +3,12 @@ import * as Sentry from '@sentry/react';
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
 
 export const initSentry = () => {
-  // DSN sozlanmagan bo'lsa (development yoki konfiguratsiya yo'q) — o'tkazib yuborish
+  // DSN sozlanmagan bo'lsa yoki local dev — o'tkazib yuborish
   if (!SENTRY_DSN || import.meta.env.DEV) return;
 
   Sentry.init({
     dsn: SENTRY_DSN,
-    environment: import.meta.env.MODE, // 'production' | 'staging'
+    environment: import.meta.env.VITE_APP_ENV || import.meta.env.MODE, // 'production' | 'staging'
     // Har 10 ta sessiondan 1 tasi record qilinadi (performance monitoring)
     tracesSampleRate: 0.1,
     // Xatolarni filterlash — bizga kerakli ma'lumotlar
@@ -37,7 +37,6 @@ export const setSentryUser = (userId, role, centerId) => {
   Sentry.setUser({ id: userId, role, centerId });
 };
 
-// Foydalanuvchi chiqib ketganda tozalash
 export const clearSentryUser = () => {
   if (!SENTRY_DSN || import.meta.env.DEV) return;
   Sentry.setUser(null);

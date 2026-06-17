@@ -48,29 +48,39 @@ export default defineConfig({
             options: { cacheName: 'google-fonts-cache', expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 } },
           },
           {
-            // Firestore API — network first, fallback to cache
+            // Firestore API — har doim network, real-time ma'lumot uchun kesh yo'q
             urlPattern: /^https:\/\/firestore\.googleapis\.com\/.*/i,
-            handler: 'NetworkFirst',
-            options: { cacheName: 'firestore-cache', expiration: { maxEntries: 50, maxAgeSeconds: 60 * 5 } },
+            handler: 'NetworkOnly',
           },
         ],
       },
     }),
   ],
+  server: {
+    port: 5173,
+    hmr: {
+      port: 5173,
+    },
+  },
   resolve: {
     alias: {
       '@': '/src',
     },
   },
   build: {
+    chunkSizeWarningLimit: 700,
     rollupOptions: {
       output: {
-        manualChunks: {
-          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-          'vendor-firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/storage'],
-          'vendor-charts': ['recharts'],
-          'vendor-ui': ['lucide-react', 'react-toastify'],
-          'vendor-pdf': ['jspdf', 'html2canvas', 'dompurify'],
+        manualChunks: (id) => {
+          if (id.includes('node_modules')) {
+            if (id.includes('react') || id.includes('react-dom') || id.includes('react-router') || id.includes('recharts')) return 'vendor-react';
+            if (id.includes('firebase')) return 'vendor-firebase';
+            if (id.includes('lucide') || id.includes('react-toastify')) return 'vendor-ui';
+            if (id.includes('jspdf') || id.includes('html2canvas') || id.includes('dompurify')) return 'vendor-pdf';
+            if (id.includes('xlsx')) return 'vendor-xlsx';
+            if (id.includes('@sentry')) return 'vendor-sentry';
+            if (id.includes('telegraf') || id.includes('axios')) return 'vendor-misc';
+          }
         },
       },
     },

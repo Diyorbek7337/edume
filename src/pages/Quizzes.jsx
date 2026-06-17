@@ -198,12 +198,6 @@ const Quizzes = () => {
       return; 
     }
     
-    // API key tekshirish
-    if (!geminiAPI.isConfigured()) {
-      toast.error("Gemini API key sozlanmagan. .env faylga VITE_GEMINI_API_KEY qo'shing.");
-      return;
-    }
-    
     setAiGenerating(true);
     try {
       const questions = await geminiAPI.generateQuestions(

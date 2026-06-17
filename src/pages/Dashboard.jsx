@@ -9,7 +9,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
 import {
   studentsAPI, teachersAPI, groupsAPI, paymentsAPI, gradesAPI,
-  attendanceAPI, leadsAPI, scheduleAPI, settingsAPI
+  attendanceAPI, leadsAPI, scheduleAPI, settingsAPI, expensesAPI
 } from '../services/api';
 import { getPendingReminders } from '../services/autoReminder';
 import { formatMoney, formatDate, toISODateString } from '../utils/helpers';
@@ -18,13 +18,15 @@ import {
   PieChart, Pie, Cell
 } from 'recharts';
 import { Link } from 'react-router-dom';
+import { toast } from 'react-toastify';
+import { captureError } from '../services/sentry';
 
 const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'];
 
 // Admin/Direktor Dashboard
 const AdminDashboard = () => {
   const [stats, setStats] = useState({
-    students: 0, teachers: 0, groups: 0, revenue: 0,
+    students: 0, teachers: 0, groups: 0, revenue: 0, expenses: 0, profit: 0,
     newLeads: 0, pendingPayments: 0, activeStudents: 0,
     attendancePresent: 0, attendanceTotal: 0, debtorsCount: 0, revenueGrowth: null
   });
@@ -48,17 +50,20 @@ const AdminDashboard = () => {
         const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
         const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
         const lastMonth = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, '0')}`;
+        // Grafikda 6 oy ko'rsatiladi — 7 oy oldingi sana
+        const since7Months = new Date(now.getFullYear(), now.getMonth() - 6, 1).toISOString();
 
-        const [students, teachers, groups, payments, leads, schedule, todayAtt, thisMonthBills, lastMonthBills] = await Promise.all([
+        const [students, teachers, groups, payments, leads, schedule, todayAtt, thisMonthBills, lastMonthBills, expenses] = await Promise.all([
           studentsAPI.getAll(),
           teachersAPI.getAll(),
           groupsAPI.getAll(),
-          paymentsAPI.getAll(),
+          paymentsAPI.getSince(since7Months), // getAll() o'rniga — faqat so'nggi 7 oy
           leadsAPI.getAll(),
           scheduleAPI.getAll(),
           attendanceAPI.getByDate(todayStr),
           paymentsAPI.getMonthlyBillsByMonth(currentMonth),
           paymentsAPI.getMonthlyBillsByMonth(lastMonth),
+          expensesAPI.getAll(),
         ]);
 
         if (!isMounted) return;
@@ -89,6 +94,14 @@ const AdminDashboard = () => {
           return filterByPeriod(paidDate);
         });
         const totalRevenue = filteredPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+        // Harajatlar hisoblash
+        const filteredExpenses = expenses.filter(e => {
+          const d = e.createdAt?.toDate ? e.createdAt.toDate() : new Date(e.date || e.createdAt);
+          return filterByPeriod(d);
+        });
+        const totalExpenses = filteredExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+        const totalProfit = totalRevenue - totalExpenses;
 
         // Kutilayotgan to'lovlar
         const pending = payments
@@ -130,6 +143,8 @@ const AdminDashboard = () => {
           teachers: teachers.length,
           groups: groups.length,
           revenue: totalRevenue,
+          expenses: totalExpenses,
+          profit: totalProfit,
           newLeads: newLeadsCount,
           pendingPayments: pending,
           activeStudents: students.filter(s => s.status === 'active').length,
@@ -196,7 +211,18 @@ const AdminDashboard = () => {
               return paidDate.getMonth() === month && paidDate.getFullYear() === year;
             })
             .reduce((sum, p) => sum + (p.amount || 0), 0);
-          revenueByMonth.push({ name: monthNames[month], revenue: monthRevenue / 1000000 });
+          const monthExpense = expenses
+            .filter(e => {
+              const d = e.createdAt?.toDate ? e.createdAt.toDate() : new Date(e.date || e.createdAt);
+              return d.getMonth() === month && d.getFullYear() === year;
+            })
+            .reduce((sum, e) => sum + (e.amount || 0), 0);
+          revenueByMonth.push({
+            name: monthNames[month],
+            revenue: +(monthRevenue / 1000000).toFixed(2),
+            expenses: +(monthExpense / 1000000).toFixed(2),
+            profit: +((monthRevenue - monthExpense) / 1000000).toFixed(2),
+          });
         }
         setMonthlyRevenue(revenueByMonth);
 
@@ -211,7 +237,12 @@ const AdminDashboard = () => {
           } catch { /* silent */ }
         }
 
-      } catch (err) { if (isMounted) console.error(err); }
+      } catch (err) {
+        if (isMounted) {
+          captureError(err, { context: 'AdminDashboard fetch' });
+          toast.error("Ma'lumotlar yuklanmadi. Sahifani yangilang.", { toastId: 'dashboard-error' });
+        }
+      }
       finally { if (isMounted) setLoading(false); }
     };
     fetchStats();
@@ -341,6 +372,9 @@ const AdminDashboard = () => {
             <div>
               <p className="text-sm text-purple-600 font-medium">Daromad ({periodLabels[period]})</p>
               <p className="text-xl font-bold text-purple-700">{formatMoney(stats.revenue)}</p>
+              {stats.expenses > 0 && (
+                <p className="text-xs text-red-500 mt-0.5">Harajat: -{formatMoney(stats.expenses)}</p>
+              )}
             </div>
             <div className="w-14 h-14 bg-purple-500 rounded-2xl flex items-center justify-center shadow-lg shadow-purple-200">
               <CreditCard className="w-7 h-7 text-white" />
@@ -400,6 +434,11 @@ const AdminDashboard = () => {
             <div>
               <p className="text-sm text-purple-600 font-medium">Bu oy daromad</p>
               <p className="text-xl font-bold text-purple-700">{formatMoney(stats.revenue)}</p>
+              {stats.expenses > 0 && (
+                <p className="text-xs text-red-500 mt-0.5 flex items-center gap-1">
+                  <TrendingDown className="w-3 h-3" /> Harajat: {formatMoney(stats.expenses)}
+                </p>
+              )}
               {stats.revenueGrowth !== null && (
                 <p className={`text-xs mt-1 flex items-center gap-1 ${stats.revenueGrowth >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                   {stats.revenueGrowth >= 0
@@ -411,6 +450,24 @@ const AdminDashboard = () => {
             </div>
             <div className="w-14 h-14 bg-purple-500 rounded-2xl flex items-center justify-center shadow-lg shadow-purple-200">
               <CreditCard className="w-7 h-7 text-white" />
+            </div>
+          </div>
+        </Card>
+
+        {/* Sof foyda */}
+        <Card padding="p-5" className={`bg-gradient-to-br col-span-2 md:col-span-1 ${stats.profit >= 0 ? 'from-green-50 to-green-100 border-green-200' : 'from-red-50 to-red-100 border-red-200'}`}>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className={`text-sm font-medium ${stats.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>Sof foyda ({periodLabels[period]})</p>
+              <p className={`text-xl font-bold ${stats.profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>{formatMoney(Math.abs(stats.profit))}</p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                {formatMoney(stats.revenue)} − {formatMoney(stats.expenses)}
+              </p>
+            </div>
+            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg ${stats.profit >= 0 ? 'bg-green-500 shadow-green-200' : 'bg-red-500 shadow-red-200'}`}>
+              {stats.profit >= 0
+                ? <TrendingUp className="w-7 h-7 text-white" />
+                : <TrendingDown className="w-7 h-7 text-white" />}
             </div>
           </div>
         </Card>
@@ -442,7 +499,7 @@ const AdminDashboard = () => {
         {/* Daromad grafigi */}
         <Card>
           <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-primary-600" /> Oylik daromad (mln)
+            <TrendingUp className="w-5 h-5 text-primary-600" /> Oylik moliya (mln so'm)
           </h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
@@ -450,8 +507,10 @@ const AdminDashboard = () => {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="name" />
                 <YAxis />
-                <Tooltip formatter={(value) => [`${value} mln`, 'Daromad']} />
-                <Bar dataKey="revenue" fill="#3B82F6" radius={[4, 4, 0, 0]} />
+                <Tooltip formatter={(value, name) => [`${value} mln`, name === 'revenue' ? 'Daromad' : name === 'expenses' ? 'Harajat' : 'Sof foyda']} />
+                <Bar dataKey="revenue"  fill="#8B5CF6" radius={[4, 4, 0, 0]} name="revenue" />
+                <Bar dataKey="expenses" fill="#EF4444" radius={[4, 4, 0, 0]} name="expenses" />
+                <Bar dataKey="profit"   fill="#10B981" radius={[4, 4, 0, 0]} name="profit" />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -648,7 +707,10 @@ const TeacherDashboard = () => {
         setTotalStudents(studentCount);
         setAllAttendance(allAtt);
         
-      } catch (err) { console.error('TeacherDashboard error:', err); }
+      } catch (err) {
+        captureError(err, { context: 'TeacherDashboard fetch' });
+        toast.error("Ma'lumotlar yuklanmadi. Sahifani yangilang.", { toastId: 'dashboard-error' });
+      }
       finally { setLoading(false); }
     };
     if (userData?.id) fetchData();
@@ -874,11 +936,14 @@ const StudentDashboard = ({ isParent = false }) => {
             setSelectedGroupId(studentGroups[0].id);
           }
           
-          // To'lovlar
-          const allPayments = await paymentsAPI.getAll();
-          setPayments(allPayments.filter(p => p.studentId === student.id));
+          // To'lovlar — monthly_bills asosida (yangi tizim)
+          const myBills = await paymentsAPI.getMonthlyBillsByStudent(student.id);
+          setPayments(myBills);
         }
-      } catch (err) { console.error('StudentDashboard error:', err); }
+      } catch (err) {
+        captureError(err, { context: 'StudentDashboard fetch' });
+        toast.error("Ma'lumotlar yuklanmadi. Sahifani yangilang.", { toastId: 'dashboard-error' });
+      }
       finally { setLoading(false); }
     };
     
@@ -890,15 +955,10 @@ const StudentDashboard = ({ isParent = false }) => {
       if (!selectedGroupId || !studentData) return;
       
       try {
-        const [gradesData, attendanceData] = await Promise.all([
-          gradesAPI.getByGroup(selectedGroupId),
-          attendanceAPI.getByGroup(selectedGroupId)
+        const [myGrades, myAttendance] = await Promise.all([
+          gradesAPI.getByStudent(studentData.id),
+          attendanceAPI.getByStudent(studentData.id)
         ]);
-        
-        
-        // Faqat bu o'quvchining ma'lumotlari
-        const myGrades = gradesData.filter(g => g.studentId === studentData.id);
-        const myAttendance = attendanceData.filter(a => a.studentId === studentData.id);
         
         
         // Period bo'yicha filter
@@ -934,7 +994,10 @@ const StudentDashboard = ({ isParent = false }) => {
         
         setGrades(filteredGrades);
         setAttendance(filteredAttendance);
-      } catch (err) { console.error('fetchGradesAndAttendance error:', err); }
+      } catch (err) {
+        captureError(err, { context: 'fetchGradesAndAttendance' });
+        toast.error("Baholar va davomat yuklanmadi. Sahifani yangilang.", { toastId: 'dashboard-error' });
+      }
     };
     
     fetchGradesAndAttendance();
@@ -956,14 +1019,16 @@ const StudentDashboard = ({ isParent = false }) => {
   const currentYear = now.getFullYear();
   const currentMonthStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
   
-  const hasPaidThisMonth = payments.some(p => 
-    p.status === 'paid' && p.month === currentMonthStr
-  );
-  
-  // Qarz summasini hisoblash
+  // monthly_bills asosida to'lov holati
+  const currentBill = payments.find(b => b.month === currentMonthStr);
+  const hasPaidThisMonth = currentBill
+    ? (currentBill.status === 'paid' || (currentBill.remainingAmount || 0) === 0)
+    : false;
+
+  // Qarz summasini hisoblash (barcha to'lanmagan billlar)
   const totalDebt = payments
-    .filter(p => p.status === 'pending')
-    .reduce((sum, p) => sum + (p.amount || 0), 0);
+    .filter(b => (b.remainingAmount || 0) > 0)
+    .reduce((sum, b) => sum + b.remainingAmount, 0);
 
   const gradeStats = {
     total: grades.length,
@@ -984,8 +1049,8 @@ const StudentDashboard = ({ isParent = false }) => {
     : 0; // Davomat yo'q bo'lsa 0%
 
   const paymentStats = {
-    paid: payments.filter(p => p.status === 'paid').reduce((sum, p) => sum + (p.amount || 0), 0),
-    pending: payments.filter(p => p.status === 'pending').reduce((sum, p) => sum + (p.amount || 0), 0),
+    paid: payments.reduce((sum, b) => sum + (b.paidAmount || 0), 0),
+    pending: payments.reduce((sum, b) => sum + (b.remainingAmount || 0), 0),
   };
 
   const selectedGroup = groups.find(g => g.id === selectedGroupId);

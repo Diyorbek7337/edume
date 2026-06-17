@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Activity, UserPlus, Edit2, Trash2, GraduationCap, CreditCard,
-  ArrowRightLeft, Users, Search, Clock, RefreshCw
+  ArrowRightLeft, Users, Search, Clock, RefreshCw, TrendingDown,
+  Archive, ArchiveRestore
 } from 'lucide-react';
 import { Card, Loading, EmptyState, Input, Select } from '../components/common';
 import { activityLogAPI } from '../services/activityLog';
@@ -49,7 +50,25 @@ const ACTION_CONFIG = {
     bg: 'bg-red-50',
     iconColor: 'text-red-600',
     sentence: (log) =>
-      `${bold(log.performer?.fullName)} ${bold(log.entityName)} ni o'quvchilar ro'yxatidan o'chirdi`,
+      `${bold(log.performer?.fullName)} ${bold(log.entityName)} ni butunlay o'chirdi`,
+    sub: (log) => log.details?.reason ? `Sabab: ${log.details.reason}` : null,
+  },
+  student_archived: {
+    Icon: Archive,
+    border: 'border-l-orange-500',
+    bg: 'bg-orange-50',
+    iconColor: 'text-orange-600',
+    sentence: (log) =>
+      `${bold(log.performer?.fullName)} ${bold(log.entityName)} ni arxivga o'tkazdi`,
+    sub: (log) => log.details?.reason ? `Sabab: ${log.details.reason}` : null,
+  },
+  student_restored: {
+    Icon: ArchiveRestore,
+    border: 'border-l-green-500',
+    bg: 'bg-green-50',
+    iconColor: 'text-green-600',
+    sentence: (log) =>
+      `${bold(log.performer?.fullName)} ${bold(log.entityName)} ni arxivdan tikladi`,
     sub: () => null,
   },
   student_graduated: {
@@ -156,6 +175,41 @@ const ACTION_CONFIG = {
       return `${bold(log.performer?.fullName)} ${bold(log.entityName)} holatini ${bold(from)} → ${bold(to)} ga o'zgartirdi`;
     },
     sub: () => null,
+  },
+  expense_added: {
+    Icon: TrendingDown,
+    border: 'border-l-red-500',
+    bg: 'bg-red-50',
+    iconColor: 'text-red-600',
+    sentence: (log) => {
+      const amount = log.details?.amount ? `${Number(log.details.amount).toLocaleString()} so'm` : '';
+      return `${bold(log.performer?.fullName)} ${bold(amount)} miqdorida harajat qo'shdi: ${bold(log.entityName)}`;
+    },
+    sub: (log) => log.details?.category ? `Kategoriya: ${log.details.category}` : null,
+  },
+  expense_updated: {
+    Icon: Edit2,
+    border: 'border-l-blue-500',
+    bg: 'bg-blue-50',
+    iconColor: 'text-blue-600',
+    sentence: (log) =>
+      `${bold(log.performer?.fullName)} harajatni tahrirladi: ${bold(log.entityName)}`,
+    sub: (log) => {
+      const amount = log.details?.amount ? `${Number(log.details.amount).toLocaleString()} so'm` : '';
+      return amount || null;
+    },
+  },
+  expense_deleted: {
+    Icon: Trash2,
+    border: 'border-l-red-500',
+    bg: 'bg-red-50',
+    iconColor: 'text-red-600',
+    sentence: (log) =>
+      `${bold(log.performer?.fullName)} harajatni o'chirdi: ${bold(log.entityName)}`,
+    sub: (log) => {
+      const amount = log.details?.amount ? `${Number(log.details.amount).toLocaleString()} so'm` : '';
+      return amount || null;
+    },
   },
 };
 
