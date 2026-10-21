@@ -52,6 +52,13 @@ service cloud.firestore {
       return isAuthenticated() && getUserRole() == 'parent';
     }
 
+    // Face ID terminal akkaunti ("Davomat" dasturi, Sozlamalar → FaceIdDevices).
+    // Faqat o'z markazining o'quvchilari/guruhlari/sozlamalarini o'qiydi va
+    // davomat yozadi. Web ilovaga kira olmaydi (AuthContext rad etadi).
+    function isDevice() {
+      return isAuthenticated() && getUserRole() == 'device';
+    }
+
     // Ota-ona farzandining ID'si orqali tekshirish
     // users/{uid}.childIds massivida studentId bor bo'lsa — ruxsat
     // (eski ota-ona hisoblarida faqat bitta `childId` maydoni bo'lishi mumkin)
@@ -211,6 +218,13 @@ service cloud.firestore {
             && request.resource.data.centerId == getUserCenterId()
             && request.resource.data.role == 'admin'
             && withinLimit(request.resource.data.centerId, 'admins'))
+        // Face ID qurilmasi — faqat direktor, faqat o'z markazi uchun va faqat
+        // faceIdDevicesAPI.create yozadigan maydonlar bilan (permissions,
+        // childIds kabi qo'shimcha huquq beruvchi maydonlarsiz).
+        || (isDirector()
+            && request.resource.data.centerId == getUserCenterId()
+            && request.resource.data.role == 'device'
+            && request.resource.data.keys().hasOnly(['fullName', 'email', 'role', 'centerId', 'createdAt']))
         || (isAuthenticated()
             && request.auth.uid == odamId
             && request.resource.data.role == 'director'
@@ -276,14 +290,16 @@ service cloud.firestore {
       allow get: if isSuperAdmin()
         || (belongsToCenter(centerId) && isStaff())
         || (belongsToCenter(centerId) && isStudent() && resource.data.userId == request.auth.uid)
-        || (belongsToCenter(centerId) && isParentOf(docId));
-      // list: faqat xodimlar. O'quvchi FAQAT o'z yozuvini so'ray oladi
+        || (belongsToCenter(centerId) && isParentOf(docId))
+        || (belongsToCenter(centerId) && isDevice());
+      // list: faqat xodimlar (va Face ID qurilmasi — yuzni o'quvchiga bog'lash uchun). O'quvchi FAQAT o'z yozuvini so'ray oladi
       // (where('userId', '==', uid)); ota-ona farzandlarini childIds bo'yicha
       // get() bilan oladi. Ilgari istalgan o'quvchi/ota-ona markazdagi BARCHA
       // talabalarni telefon, ota-ona telefoni, manzil va chegirmasi bilan
       // yuklab ola olardi. Sinfdoshlar ismi — student_directory'da.
       allow list: if isSuperAdmin()
         || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && isDevice())
         || (belongsToCenter(centerId) && isStudent() && resource.data.userId == request.auth.uid);
       // create: tarif limitidan oshib ketmasligi kerak (super_admin limitdan ozod)
       allow create: if isSuperAdmin()
@@ -373,17 +389,18 @@ service cloud.firestore {
       allow delete: if isSuperAdmin() || (canWrite(centerId) && isDirector());
     }
 
-    // Attendance — faqat o'qituvchi va admin yoza oladi; ota-ona o'qiydi
+    // Attendance — o'qituvchi, admin va Face ID qurilmasi yoza oladi; ota-ona o'qiydi.
+    // Qurilma o'chira olmaydi — xato belgini o'qituvchi tuzatadi.
     match /centers/{centerId}/attendance/{docId} {
       allow get: if isSuperAdmin()
-        || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && (isStaff() || isDevice()))
         || (belongsToCenter(centerId) && isStudent() && resource.data.studentId == request.auth.uid)
         || (belongsToCenter(centerId) && isParentOf(resource.data.studentId));
       allow list: if isSuperAdmin()
-        || (belongsToCenter(centerId) && isStaff())
+        || (belongsToCenter(centerId) && (isStaff() || isDevice()))
         || (belongsToCenter(centerId) && isStudent() && resource.data.studentId == request.auth.uid)
         || (belongsToCenter(centerId) && isParent());
-      allow create, update: if isSuperAdmin() || (canWrite(centerId) && isStaff());
+      allow create, update: if isSuperAdmin() || (canWrite(centerId) && (isStaff() || isDevice()));
       allow delete: if isSuperAdmin() || (canWrite(centerId) && isAdminOrDirector());
     }
 
