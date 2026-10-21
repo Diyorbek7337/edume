@@ -3,8 +3,61 @@ import { Search, Plus, Edit, Trash2, Shield, Mail, Phone } from 'lucide-react';
 import { Card, Button, Input, Badge, Avatar, Table, Modal, Loading, EmptyState } from '../components/common';
 import { usersAPI } from '../services/api';
 import { formatPhone, formatDate } from '../utils/helpers';
-import { ROLES } from '../utils/constants';
+import { ROLES, ADMIN_MODULES, HELPER_TEACHER_MODULES } from '../utils/constants';
 import { toast } from 'react-toastify';
+
+const ALL_MODULE_IDS = ADMIN_MODULES.map(m => m.id);
+
+const PermissionsGrid = ({ permissions, onToggle, onToggleAll, onApplyHelperPreset }) => {
+  const allChecked = permissions.length === ALL_MODULE_IDS.length;
+  const isHelperPreset = permissions.length === HELPER_TEACHER_MODULES.length
+    && HELPER_TEACHER_MODULES.every(id => permissions.includes(id));
+  return (
+    <div className="border border-gray-200 rounded-lg p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <span className="text-sm font-medium text-gray-700">Bo'limlarga kirish huquqlari</span>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onApplyHelperPreset}
+            className="text-xs text-primary-600 hover:underline"
+          >
+            Yordamchi o'qituvchi
+          </button>
+          <button
+            type="button"
+            onClick={onToggleAll}
+            className="text-xs text-primary-600 hover:underline"
+          >
+            {allChecked ? 'Hammasini o\'chirish' : 'Hammasini yoqish'}
+          </button>
+        </div>
+      </div>
+
+      {isHelperPreset && (
+        <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
+          Yordamchi o'qituvchi to'plami: o'quvchilarning aloqa ma'lumotlarini ko'radi,
+          davomat qiladi, sinf va uy topshiriqlarini baholaydi. To'lov, lid va
+          sozlamalarga kira olmaydi.
+        </p>
+      )}
+      <div className="grid grid-cols-2 gap-1.5">
+        {ADMIN_MODULES.map(module => (
+          <label key={module.id} className="flex items-center gap-2 cursor-pointer select-none py-1 px-2 rounded hover:bg-gray-50">
+            <input
+              type="checkbox"
+              checked={permissions.includes(module.id)}
+              onChange={() => onToggle(module.id)}
+              className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+            />
+            <span className="text-sm text-gray-700">{module.label}</span>
+          </label>
+        ))}
+      </div>
+      <p className="text-xs text-gray-400">{permissions.length}/{ALL_MODULE_IDS.length} ta bo'lim yoqilgan</p>
+    </div>
+  );
+};
 
 const Admins = () => {
   const [admins, setAdmins] = useState([]);
@@ -14,7 +67,7 @@ const Admins = () => {
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [selectedAdmin, setSelectedAdmin] = useState(null);
-  const [formData, setFormData] = useState({ fullName: '', email: '', phone: '', password: '' });
+  const [formData, setFormData] = useState({ fullName: '', email: '', phone: '', password: '', permissions: [...ALL_MODULE_IDS] });
   const [formLoading, setFormLoading] = useState(false);
   const [formError, setFormError] = useState('');
 
@@ -35,9 +88,29 @@ const Admins = () => {
     a.email?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const resetForm = () => { 
-    setFormData({ fullName: '', email: '', phone: '', password: '' }); 
-    setFormError(''); 
+  const resetForm = () => {
+    setFormData({ fullName: '', email: '', phone: '', password: '', permissions: [...ALL_MODULE_IDS] });
+    setFormError('');
+  };
+
+  const toggleModule = (moduleId) => {
+    setFormData(prev => ({
+      ...prev,
+      permissions: prev.permissions.includes(moduleId)
+        ? prev.permissions.filter(id => id !== moduleId)
+        : [...prev.permissions, moduleId]
+    }));
+  };
+
+  const toggleAllModules = () => {
+    setFormData(prev => ({
+      ...prev,
+      permissions: prev.permissions.length === ALL_MODULE_IDS.length ? [] : [...ALL_MODULE_IDS]
+    }));
+  };
+
+  const applyHelperPreset = () => {
+    setFormData(prev => ({ ...prev, permissions: [...HELPER_TEACHER_MODULES] }));
   };
 
   const handleAdd = async (e) => {
@@ -53,7 +126,8 @@ const Admins = () => {
         fullName: formData.fullName,
         email: formData.email,
         phone: formData.phone,
-        role: ROLES.ADMIN
+        role: ROLES.ADMIN,
+        permissions: formData.permissions,
       }, formData.password);
       
       setAdmins([{ ...newAdmin, id: newAdmin.id }, ...admins]);
@@ -82,7 +156,8 @@ const Admins = () => {
     try {
       await usersAPI.update(selectedAdmin.id, {
         fullName: formData.fullName,
-        phone: formData.phone
+        phone: formData.phone,
+        permissions: formData.permissions,
       });
       setAdmins(admins.map(a => a.id === selectedAdmin.id ? { ...a, fullName: formData.fullName, phone: formData.phone } : a));
       setShowEditModal(false);
@@ -108,7 +183,13 @@ const Admins = () => {
 
   const openEditModal = (admin) => {
     setSelectedAdmin(admin);
-    setFormData({ fullName: admin.fullName || '', email: admin.email || '', phone: admin.phone || '', password: '' });
+    setFormData({
+      fullName: admin.fullName || '',
+      email: admin.email || '',
+      phone: admin.phone || '',
+      password: '',
+      permissions: Array.isArray(admin.permissions) ? admin.permissions : ALL_MODULE_IDS,
+    });
     setShowEditModal(true);
   };
 
@@ -213,41 +294,47 @@ const Admins = () => {
       )}
 
       {/* Add Modal */}
-      <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title="Yangi administrator qo'shish" size="md">
+      <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title="Yangi administrator qo'shish" size="lg">
         <form onSubmit={handleAdd} className="space-y-4">
           {formError && (
             <div className="p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm">
               {formError}
             </div>
           )}
-          <Input 
-            label="To'liq ismi" 
-            value={formData.fullName} 
-            onChange={(e) => setFormData({ ...formData, fullName: e.target.value })} 
+          <Input
+            label="To'liq ismi"
+            value={formData.fullName}
+            onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
             placeholder="Ism Familiya"
-            required 
+            required
           />
-          <Input 
-            label="Email" 
-            type="email" 
-            value={formData.email} 
-            onChange={(e) => setFormData({ ...formData, email: e.target.value })} 
+          <Input
+            label="Email"
+            type="email"
+            value={formData.email}
+            onChange={(e) => setFormData({ ...formData, email: e.target.value })}
             placeholder="admin@example.com"
-            required 
+            required
           />
-          <Input 
-            label="Telefon" 
-            value={formData.phone} 
-            onChange={(e) => setFormData({ ...formData, phone: e.target.value })} 
+          <Input
+            label="Telefon"
+            value={formData.phone}
+            onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
             placeholder="+998901234567"
           />
-          <Input 
-            label="Parol" 
-            type="password" 
-            value={formData.password} 
-            onChange={(e) => setFormData({ ...formData, password: e.target.value })} 
+          <Input
+            label="Parol"
+            type="password"
+            value={formData.password}
+            onChange={(e) => setFormData({ ...formData, password: e.target.value })}
             placeholder="Kamida 6 ta belgi"
-            required 
+            required
+          />
+          <PermissionsGrid
+            permissions={formData.permissions}
+            onToggle={toggleModule}
+            onToggleAll={toggleAllModules}
+            onApplyHelperPreset={applyHelperPreset}
           />
           <div className="flex justify-end gap-2 pt-4 border-t">
             <Button type="button" variant="ghost" onClick={() => setShowAddModal(false)}>Bekor qilish</Button>
@@ -257,27 +344,28 @@ const Admins = () => {
       </Modal>
 
       {/* Edit Modal */}
-      <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title="Administrator tahrirlash">
+      <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title="Administrator tahrirlash" size="lg">
         <form onSubmit={handleEdit} className="space-y-4">
           {formError && (
             <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{formError}</div>
           )}
-          <Input 
-            label="To'liq ismi" 
-            value={formData.fullName} 
-            onChange={(e) => setFormData({ ...formData, fullName: e.target.value })} 
-            required 
+          <Input
+            label="To'liq ismi"
+            value={formData.fullName}
+            onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
+            required
           />
-          <Input 
-            label="Email" 
-            type="email" 
-            value={formData.email} 
-            disabled 
+          <Input label="Email" type="email" value={formData.email} disabled />
+          <Input
+            label="Telefon"
+            value={formData.phone}
+            onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
           />
-          <Input 
-            label="Telefon" 
-            value={formData.phone} 
-            onChange={(e) => setFormData({ ...formData, phone: e.target.value })} 
+          <PermissionsGrid
+            permissions={formData.permissions}
+            onToggle={toggleModule}
+            onToggleAll={toggleAllModules}
+            onApplyHelperPreset={applyHelperPreset}
           />
           <div className="flex justify-end gap-2 pt-4 border-t">
             <Button type="button" variant="ghost" onClick={() => setShowEditModal(false)}>Bekor qilish</Button>

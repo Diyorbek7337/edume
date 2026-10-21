@@ -1,10 +1,13 @@
 import {
-  collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc,
-  query, where, orderBy, limit, serverTimestamp, setDoc, writeBatch
+  collection, doc, getDocs, getDoc,
+  addDoc as fsAddDoc, updateDoc as fsUpdateDoc, deleteDoc as fsDeleteDoc, setDoc as fsSetDoc,
+  writeBatch as fsWriteBatch, runTransaction as fsRunTransaction,
+  query, where, orderBy, limit, serverTimestamp, getFirestore,
+  increment, arrayUnion
 } from 'firebase/firestore';
 import { createUserWithEmailAndPassword, getAuth, signOut } from 'firebase/auth';
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { db, getCurrentCenter, getCenterCollection, storage } from './firebase';
+import { db, getCurrentCenter, getCenterCollection, storage, assertCenterWritable, getViewer, isLearnerViewer } from './firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { captureError } from './sentry';
 import { toast } from 'react-toastify';
@@ -22,6 +25,29 @@ const logError = (message, err, silent = false) => {
     });
   }
 };
+
+// ==================== YOZISH AMALLARI (faqat-o'qish rejimi nazorati) ====================
+// Obuna tugagan markazda yozishdan oldin tushunarli xato beradi (firebase.js →
+// assertCenterWritable). Imzolar firebase/firestore bilan bir xil.
+const addDoc = (ref, data) => { assertCenterWritable(ref); return fsAddDoc(ref, data); };
+const updateDoc = (ref, ...args) => { assertCenterWritable(ref); return fsUpdateDoc(ref, ...args); };
+const setDoc = (ref, ...args) => { assertCenterWritable(ref); return fsSetDoc(ref, ...args); };
+const deleteDoc = (ref) => { assertCenterWritable(ref); return fsDeleteDoc(ref); };
+const writeBatch = (firestore) => {
+  const batch = fsWriteBatch(firestore);
+  return {
+    set: (ref, ...args) => { assertCenterWritable(ref); batch.set(ref, ...args); return batch; },
+    update: (ref, ...args) => { assertCenterWritable(ref); batch.update(ref, ...args); return batch; },
+    delete: (ref) => { assertCenterWritable(ref); batch.delete(ref); return batch; },
+    commit: () => batch.commit(),
+  };
+};
+const runTransaction = (firestore, fn, options) => fsRunTransaction(firestore, (tx) => fn({
+  get: (ref) => tx.get(ref),
+  set: (ref, ...args) => { assertCenterWritable(ref); tx.set(ref, ...args); return tx; },
+  update: (ref, ...args) => { assertCenterWritable(ref); tx.update(ref, ...args); return tx; },
+  delete: (ref) => { assertCenterWritable(ref); tx.delete(ref); return tx; },
+}), options);
 
 // Secondary Firebase instance - faqat bir marta yaratiladi
 let secondaryApp = null;
@@ -115,32 +141,41 @@ export const centersAPI = {
     return true;
   },
 
-  // Center uchun admin yaratish
+  // Center uchun admin yaratish.
+  // Barcha yozuvlar ikkilamchi (yangi yaratilgan foydalanuvchi bilan autentifikatsiyalangan)
+  // ilova orqali ketadi — ro'yxatdan o'tayotgan tashrifchi birlamchi ilovada login
+  // qilmagan bo'ladi va rules yozuvni rad etadi. Tartib muhim:
+  // auth user -> center (ownerUid bilan) -> users doc -> settings,
+  // chunki users create qoidasi center.ownerUid ni, settings qoidasi esa
+  // allaqachon yozilgan users doc'dagi director rolini tekshiradi.
   createWithAdmin: async (centerData, adminData, password) => {
     const auth = getSecondaryAuth();
-    
+    const secondaryDb = getFirestore(secondaryApp);
+
     try {
-      // 1. Center yaratish
-      const centerRef = await addDoc(collection(db, 'centers'), {
+      // 1. Admin auth user yaratish
+      const userCredential = await createUserWithEmailAndPassword(auth, adminData.email, password);
+      const uid = userCredential.user.uid;
+
+      // 2. Center yaratish
+      const centerRef = await addDoc(collection(secondaryDb, 'centers'), {
         name: centerData.name,
         phone: centerData.phone || '',
         email: centerData.email || '',
         address: centerData.address || '',
         logo: centerData.logo || '',
+        type: centerData.type === 'solo' ? 'solo' : 'center',
         status: 'active',
         subscription: 'trial',
         trialEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 kun sinov
+        ownerUid: uid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
       const centerId = centerRef.id;
 
-      // 2. Admin user yaratish
-      const userCredential = await createUserWithEmailAndPassword(auth, adminData.email, password);
-      const uid = userCredential.user.uid;
-
       // 3. Users kolleksiyasiga qo'shish
-      await setDoc(doc(db, 'users', uid), {
+      await setDoc(doc(secondaryDb, 'users', uid), {
         fullName: adminData.fullName,
         email: adminData.email,
         phone: adminData.phone || '',
@@ -150,7 +185,7 @@ export const centersAPI = {
       });
 
       // 4. Center settings yaratish
-      await setDoc(doc(db, `centers/${centerId}/settings`, 'main'), {
+      await setDoc(doc(secondaryDb, `centers/${centerId}/settings`, 'main'), {
         centerName: centerData.name,
         phone: centerData.phone || '',
         email: centerData.email || '',
@@ -162,6 +197,22 @@ export const centersAPI = {
         teacherFixedSalary: '3000000',
         createdAt: serverTimestamp(),
       });
+
+      // 5. Direktorni o'zini ham "O'qituvchi" sifatida qo'shish — asosan yakka
+      // o'qituvchilar (markazsiz repetitorlar) uchun: aks holda ular guruh
+      // yaratganda o'zlarini "O'qituvchi" ro'yxatidan topa olmay qolishardi
+      // (Teachers kolleksiyasida yozuvi yo'q edi). Ko'p xodimli markazlar uchun
+      // ham zararsiz — direktor buni tahrirlashi yoki e'tiborsiz qoldirishi mumkin.
+      await addDoc(collection(secondaryDb, `centers/${centerId}/teachers`), {
+        fullName: adminData.fullName,
+        email: adminData.email,
+        phone: adminData.phone || '',
+        telegram: '',
+        subject: adminData.subject || '',
+        status: 'active',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }).catch(e => logError('auto teacher-record creation warning:', e, true));
 
       // Sign out from secondary auth
       await signOut(auth).catch(e => logError('secondary signOut warning:', e, true));
@@ -237,6 +288,7 @@ export const usersAPI = {
         role: data.role,
         centerId: centerId,
         ...(data.mustChangePassword && { mustChangePassword: true }),
+        ...(data.permissions && { permissions: data.permissions }),
         // Parent uchun qo'shimcha fieldlar
         ...(data.role === 'parent' && {
           childId: data.childId || null,
@@ -295,9 +347,52 @@ export const usersAPI = {
 };
 
 // ==================== STUDENTS (Center-based) ====================
+// ==================== O'QUVCHI / OTA-ONA UCHUN XAVFSIZ RO'YXAT ====================
+// O'quvchi va ota-ona `students` kolleksiyasini ro'yxat qilib o'qiy olmaydi
+// (firestore.rules). Ular uchun studentsAPI.getAll/getByGroup quyidagini
+// qaytaradi:
+//   - O'Z yozuvlari to'liq holda (o'quvchi: userId == uid; ota-ona: childIds)
+//   - qolgan talabalar — student_directory'dan FAQAT { id, fullName, groupId,
+//     groupIds, groupName, status } (telefon, ota-ona, manzil, to'lov — yo'q)
+// Sahifalardagi "o'zimni topish" mantig'i (email/telefon/childIds bo'yicha)
+// o'zgarishsiz ishlayveradi: telefon/email faqat o'z yozuvlarida bor.
+const getMyStudentRecords = async () => {
+  const { role, uid, childIds } = getViewer();
+  if (role === 'student' && uid) {
+    const snap = await getDocs(query(centerCollection('students'), where('userId', '==', uid)));
+    return snap.docs.map(d => ({ id: d.id, ...d.data(), isMine: true }));
+  }
+  if (role === 'parent' && childIds.length > 0) {
+    const snaps = await Promise.all(childIds.map(id => getDoc(centerDoc('students', id))));
+    return snaps.filter(d => d.exists()).map(d => ({ id: d.id, ...d.data(), isMine: true }));
+  }
+  return [];
+};
+
+const getDirectoryEntries = async (groupId = null) => {
+  const coll = centerCollection('student_directory');
+  const snap = await getDocs(groupId ? query(coll, where('groupId', '==', groupId)) : coll);
+  return snap.docs.map(d => ({ id: d.id, ...d.data(), isDirectoryEntry: true }));
+};
+
+const mergeWithOwn = (directory, own) => {
+  const ownIds = new Set(own.map(s => s.id));
+  return [...own, ...directory.filter(s => !ownIds.has(s.id))];
+};
+
+const inGroup = (student, groupId) =>
+  student.groupId === groupId || (Array.isArray(student.groupIds) && student.groupIds.includes(groupId));
+
 export const studentsAPI = {
   getAll: async () => {
     try {
+      if (isLearnerViewer()) {
+        const [own, directory] = await Promise.all([
+          getMyStudentRecords(),
+          getDirectoryEntries().catch(() => []),
+        ]);
+        return mergeWithOwn(directory, own);
+      }
       const snapshot = await getDocs(centerCollection('students'));
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
@@ -308,11 +403,28 @@ export const studentsAPI = {
 
   getByGroup: async (groupId) => {
     try {
+      if (isLearnerViewer()) {
+        const [own, directory] = await Promise.all([
+          getMyStudentRecords(),
+          getDirectoryEntries(groupId).catch(() => []),
+        ]);
+        return mergeWithOwn(directory, own.filter(s => inGroup(s, groupId)));
+      }
       const q = query(centerCollection('students'), where('groupId', '==', groupId));
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     } catch (err) {
       logError('students getByGroup error:', err);
+      return [];
+    }
+  },
+
+  // Joriy o'quvchining o'z yozuvi / ota-onaning farzandlari (to'liq ma'lumot bilan)
+  getMine: async () => {
+    try {
+      return await getMyStudentRecords();
+    } catch (err) {
+      logError('students getMine error:', err);
       return [];
     }
   },
@@ -343,6 +455,40 @@ export const studentsAPI = {
   delete: async (id) => {
     await deleteDoc(centerDoc('students', id));
     return true;
+  },
+
+  /**
+   * Guruhdagi barcha FAOL o'quvchilarni "bitirgan" deb belgilaydi.
+   *
+   * Nega kerak: guruh bitirgan deb belgilanganda ichidagi o'quvchilar
+   * avval faol bo'lib qolaverardi. Natijada ular To'lovlar sahifasida
+   * qarzdor bo'lib turaverar, guruhi esa ro'yxatda topilmagani uchun
+   * "Guruhsiz" ko'rinardi va qarzi guruh narxi o'rniga standart narx
+   * bo'yicha hisoblanardi.
+   *
+   * Allaqachon bitirgan yoki arxivlangan o'quvchilarga tegilmaydi.
+   * @returns {Promise<number>} nechta o'quvchi belgilangani
+   */
+  graduateByGroup: async (groupId, performerId) => {
+    const all = await studentsAPI.getByGroup(groupId);
+    const target = all.filter(s => s.status === 'active' || !s.status);
+    if (target.length === 0) return 0;
+
+    const graduatedAt = new Date().toISOString();
+    const CHUNK = 499;
+    for (let i = 0; i < target.length; i += CHUNK) {
+      const batch = writeBatch(db);
+      target.slice(i, i + CHUNK).forEach(s => {
+        batch.update(centerDoc('students', s.id), {
+          status: 'graduated',
+          graduatedAt,
+          graduatedBy: performerId || null,
+          updatedAt: serverTimestamp(),
+        });
+      });
+      await batch.commit();
+    }
+    return target.length;
   },
 };
 
@@ -533,6 +679,21 @@ export const paymentsAPI = {
     }
   },
 
+  // Faqat `sinceMonth`dan (masalan "2025-05") keyingi hisob-kitoblar — Payments.jsx
+  // sahifasi kunlik operatsion ish uchun ochilganda BUTUN tarixni emas, oqilona
+  // oynani yuklashi uchun. 15 oy orqaga — yil chegarasidan (dekabr→yanvar) o'tib
+  // ketgan qarzlar ham to'g'ri hisoblanishi uchun xavfsizlik zaxirasi bilan.
+  getMonthlyBillsSince: async (sinceMonth) => {
+    try {
+      const q = query(centerCollection('monthly_bills'), where('month', '>=', sinceMonth));
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err) {
+      logError('monthly_bills getSince error:', err);
+      return [];
+    }
+  },
+
   createMonthlyBill: async (data) => {
     const docRef = await addDoc(centerCollection('monthly_bills'), {
       ...data,
@@ -541,12 +702,94 @@ export const paymentsAPI = {
     return { id: docRef.id, ...data };
   },
 
-  updateMonthlyBill: async (id, data) => {
-    await updateDoc(centerDoc('monthly_bills', id), {
-      ...data,
+  // Mavjud oylik hisobga to'lovni ATOMIK qo'shish.
+  // MUHIM: paidAmount/remainingAmount ni oldindan hisoblangan absolyut son
+  // sifatida emas, increment() orqali yozadi — shuning uchun ikki admin
+  // bir vaqtda (masalan ikki tabda) shu bitta billga to'lov kiritsa ham,
+  // Firestore serverida ikkalasi ham to'g'ri qo'shiladi ("oxirgi yozuvchi
+  // g'olib" muammosi yo'q). payments tarixi ham arrayUnion bilan — to'liq
+  // massivni qayta yozib, boshqa yozuvchining yozgan elementini yo'qotmaydi.
+  // status hali ham chaqiruvchi tomonidan hisoblanadi (bu yerda o'zgarmadi) —
+  // juda kamdan-kam concurrent holatda bir lahzaga eskirishi mumkin, lekin
+  // pul summalari (asosiy xavf) har doim to'g'ri bo'ladi.
+  applyBillPayment: async (billId, {
+    paymentAmount, paymentRecord, status,
+    totalAmount, originalAmount, appliedDiscount, discountType, discountAmount,
+  }) => {
+    const updateData = {
+      paidAmount: increment(paymentAmount),
+      remainingAmount: increment(-paymentAmount),
+      payments: arrayUnion(paymentRecord),
+      status,
       updatedAt: serverTimestamp(),
+    };
+    // Chegirma birinchi marta qo'llanayotgan bo'lsagina yuboriladi
+    if (totalAmount !== undefined) {
+      updateData.totalAmount = totalAmount;
+      updateData.originalAmount = originalAmount;
+      updateData.appliedDiscount = appliedDiscount;
+      updateData.discountType = discountType;
+      updateData.discountAmount = discountAmount;
+    }
+    await updateDoc(centerDoc('monthly_bills', billId), updateData);
+    return { id: billId };
+  },
+
+  // Hali Firestore'da yo'q ("virtual") davr uchun to'lovni ATOMIK qo'llaydi.
+  // MUHIM: deterministik ID (`${studentId}_${periodKey}`) + runTransaction
+  // ishlatadi. Sabab: eski kod "bu davr uchun hisob bormi?" tekshiruvini
+  // mahalliy (eskirishi mumkin) state'dan qilib, keyin addDoc bilan yangi
+  // hujjat yaratardi — ikki foydalanuvchi bir vaqtda AYNAN shu davr uchun
+  // BIRINCHI to'lovni kiritsa, ikkalasi ham "hali yo'q" deb topib, IKKITA
+  // alohida hisob-kitob hujjati yaratib qo'yardi (dublikat bookkeeping).
+  // Deterministik ID bilan ikkalasi ham BIR XIL hujjatga urinadi;
+  // runTransaction Firestore'ning optimistik concurrency nazorati orqali
+  // ikkinchi urinishni avtomatik qayta ishga tushiradi — u hujjat
+  // birinchisi tomonidan ALLAQACHON yaratilganini ko'rib, ustiga yozib
+  // yubormasdan, to'lovni qo'shib qo'yadi (increment kabi, lekin qo'lda).
+  applyPeriodPayment: async (studentId, periodKey, { paymentAmount, paymentRecord, billDefaults }) => {
+    const centerId = getCurrentCenter();
+    if (!centerId) throw new Error('No center selected');
+    const billId = `${studentId}_${periodKey}`;
+    const billRef = doc(db, `centers/${centerId}/monthly_bills`, billId);
+
+    return runTransaction(db, async (tx) => {
+      const snap = await tx.get(billRef);
+
+      if (!snap.exists()) {
+        const totalAmount = billDefaults.totalAmount;
+        const newPaidAmount = paymentAmount;
+        const newRemainingAmount = Math.max(0, totalAmount - newPaidAmount);
+        const data = {
+          ...billDefaults,
+          studentId,
+          paidAmount: newPaidAmount,
+          remainingAmount: newRemainingAmount,
+          status: newRemainingAmount <= 0 ? 'paid' : 'partial',
+          payments: [paymentRecord],
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+        tx.set(billRef, data);
+        return { id: billId, ...data };
+      }
+
+      // Boshqa so'rov shu oraliqda ulgurib yaratgan ekan — increment o'rniga
+      // qo'lda qo'shamiz (tranzaksiya ichida increment() ham ishlaydi, lekin
+      // aniq son bilan qaytarish uchun shu yerda o'zimiz hisoblaymiz)
+      const existing = snap.data();
+      const newPaidAmount = (existing.paidAmount || 0) + paymentAmount;
+      const newRemainingAmount = Math.max(0, existing.totalAmount - newPaidAmount);
+      const data = {
+        paidAmount: newPaidAmount,
+        remainingAmount: newRemainingAmount,
+        status: newRemainingAmount <= 0 ? 'paid' : 'partial',
+        payments: [...(existing.payments || []), paymentRecord],
+        updatedAt: serverTimestamp(),
+      };
+      tx.update(billRef, data);
+      return { id: billId, ...existing, ...data };
     });
-    return { id, ...data };
   },
 
   deleteMonthlyBill: async (id) => {
@@ -1103,26 +1346,19 @@ export const chatAPI = {
       const lastRead = readDoc.exists() ? readDoc.data().lastRead : null;
       
       // O'qilmagan xabarlarni sanash
-      let q;
-      if (lastRead) {
-        q = query(
-          centerCollection('chat_messages'),
-          where('groupId', '==', groupId)
-        );
-      } else {
-        q = query(
-          centerCollection('chat_messages'),
-          where('groupId', '==', groupId)
-        );
-      }
-      
+      const q = query(
+        centerCollection('chat_messages'),
+        where('groupId', '==', groupId)
+      );
       const snapshot = await getDocs(q);
-      
+
       if (!lastRead) return snapshot.size;
-      
+
       const lastReadTime = lastRead?.seconds || new Date(lastRead).getTime() / 1000;
       return snapshot.docs.filter(doc => {
-        const msgTime = doc.data().timestamp?.seconds || new Date(doc.data().timestamp).getTime() / 1000;
+        // Xabarlar sendMessage da createdAt (serverTimestamp) bilan yoziladi
+        const created = doc.data().createdAt;
+        const msgTime = created?.seconds || (created ? new Date(created).getTime() / 1000 : 0);
         return msgTime > lastReadTime && doc.data().senderId !== odamId;
       }).length;
     } catch (err) {
@@ -1487,5 +1723,66 @@ export const expensesAPI = {
   delete: async (id) => {
     await deleteDoc(centerDoc('expenses', id));
     return true;
+  },
+};
+
+// ==================== TARIF ARIZALARI ====================
+//
+// Mijoz tarifni tanlaganda shu yerga yozuv tushadi va Cloud Function
+// (onSubscriptionRequest) Telegram orqali xabar yuboradi. To'lov tizimi
+// yo'q — tarifni SuperAdmin qo'lda faollashtiradi.
+//
+// GLOBAL kolleksiya (centers/{id}/... emas): super_admin barcha markazlarning
+// arizalarini bitta so'rov bilan ko'rishi uchun.
+export const subscriptionRequestsAPI = {
+  create: async ({ plan, centerId, centerName, contactName, contactPhone, note }) => {
+    const docRef = await addDoc(collection(db, 'subscription_requests'), {
+      plan,
+      centerId,
+      centerName: centerName || '',
+      contactName: contactName || '',
+      contactPhone: contactPhone || '',
+      note: note || '',
+      status: 'new',
+      createdAt: serverTimestamp(),
+    });
+    return { id: docRef.id };
+  },
+
+  // Direktor o'z markazining arizalarini ko'radi (takroriy yuborishning oldini
+  // olish va "so'rovingiz qabul qilindi" holatini ko'rsatish uchun)
+  getMine: async () => {
+    try {
+      const centerId = getCurrentCenter();
+      if (!centerId) return [];
+      const q = query(
+        collection(db, 'subscription_requests'),
+        where('centerId', '==', centerId)
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (err) {
+      logError('subscriptionRequests getMine error:', err, true);
+      return [];
+    }
+  },
+
+  // SuperAdmin uchun — barcha markazlar arizalari
+  getAll: async () => {
+    try {
+      const snapshot = await getDocs(collection(db, 'subscription_requests'));
+      return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (err) {
+      logError('subscriptionRequests getAll error:', err);
+      return [];
+    }
+  },
+
+  updateStatus: async (id, status) => {
+    await updateDoc(doc(db, 'subscription_requests', id), {
+      status,
+      updatedAt: serverTimestamp(),
+    });
+    return { id, status };
   },
 };

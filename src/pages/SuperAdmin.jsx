@@ -9,7 +9,8 @@ import { collection, getDocs, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { formatMoney, formatDate } from '../utils/helpers';
-import { SUBSCRIPTION_PLANS, ADDON_SERVICES, calculateTotalPrice } from '../utils/subscriptions';
+import { SUBSCRIPTION_PLANS, ADDON_SERVICES, calculateTotalPrice, getCenterAccess, extendFrom } from '../utils/subscriptions';
+import { subscriptionRequestsAPI } from '../services/api';
 import { toast } from 'react-toastify';
 import { useNavigate } from 'react-router-dom';
 
@@ -25,6 +26,7 @@ const SuperAdmin = () => {
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [centerStats, setCenterStats] = useState({});
   const [actionLoading, setActionLoading] = useState(null);
+  const [requests, setRequests] = useState([]);
 
   useEffect(() => {
     fetchData();
@@ -64,11 +66,33 @@ const SuperAdmin = () => {
       
       setCenters(centersData);
       setCenterStats(stats);
+
+      // Tarif arizalari — /pricing sahifasidan kelgan so'rovlar
+      const reqs = await subscriptionRequestsAPI.getAll();
+      reqs.sort((a, b) => {
+        const da = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+        const dbb = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+        return dbb - da;
+      });
+      setRequests(reqs);
     } catch (err) {
       console.error(err);
       toast.error("Ma'lumotlarni yuklashda xatolik");
     }
     setLoading(false);
+  };
+
+  const handleRequestDone = async (id) => {
+    setActionLoading(id);
+    try {
+      await subscriptionRequestsAPI.updateStatus(id, 'done');
+      setRequests(prev => prev.map(r => (r.id === id ? { ...r, status: 'done' } : r)));
+      toast.success('Ariza bajarilgan deb belgilandi');
+    } catch (err) {
+      console.error(err);
+      toast.error('Xatolik: ' + err.message);
+    }
+    setActionLoading(null);
   };
 
   const handleStatusChange = async (centerId, newStatus) => {
@@ -92,14 +116,26 @@ const SuperAdmin = () => {
     setActionLoading(centerId);
     try {
       const centerRef = doc(db, 'centers', centerId);
+      const center = centers.find(c => c.id === centerId) || {};
       const updates = { 
         subscription: newSubscription,
         updatedAt: new Date()
       };
       
-      // Trial bo'lmasa, trial muddatini o'chirish
       if (newSubscription !== 'trial') {
+        // Pullik tarif — trial muddati o'chiriladi, to'lov muddati (paidUntil)
+        // qo'yiladi: amaldagi muddat hali tugamagan bo'lsa saqlanadi (tarifni
+        // almashtirish mijozning to'langan kunlarini yo'qotmaydi), aks holda
+        // bugundan +30 kun. Keyingi oylarni "+30 kun" tugmasi bilan uzaytiring.
         updates.trialEndsAt = null;
+        const current = center.paidUntil?.toDate ? center.paidUntil.toDate() : (center.paidUntil ? new Date(center.paidUntil) : null);
+        updates.paidUntil = current && current > new Date() ? current : extendFrom(null, 30);
+      } else {
+        // Sinovga qaytarish — sinov muddati tugagan bo'lsa bugundan +30 kun
+        const currentTrial = center.trialEndsAt?.toDate
+          ? center.trialEndsAt.toDate()
+          : (center.trialEndsAt ? new Date(center.trialEndsAt) : null);
+        updates.trialEndsAt = currentTrial && currentTrial > new Date() ? currentTrial : extendFrom(null, 30);
       }
       
       await updateDoc(centerRef, updates);
@@ -108,6 +144,43 @@ const SuperAdmin = () => {
     } catch (err) {
       console.error('Subscription change error:', err);
       toast.error("Xatolik: " + err.message);
+    }
+    setActionLoading(null);
+  };
+
+  // Obuna muddatini uzaytirish: sinovda trialEndsAt, pullik tarifda paidUntil.
+  // Muddat hali tugamagan bo'lsa — undan keyin, tugagan bo'lsa — bugundan +N kun.
+  // Mijoz to'lov qilganda shu tugma bosiladi (1 oy = 30 kun).
+  const handleExtend = async (centerId, days) => {
+    const center = centers.find(c => c.id === centerId);
+    if (!center) return;
+    const field = (center.subscription || 'trial') === 'trial' ? 'trialEndsAt' : 'paidUntil';
+    const newDate = extendFrom(center[field], days);
+    if (!window.confirm(`${center.name}: muddat ${newDate.toLocaleDateString('uz-UZ')} gacha uzaytirilsinmi?`)) return;
+    setActionLoading(centerId);
+    try {
+      await updateDoc(doc(db, 'centers', centerId), { [field]: newDate, updatedAt: new Date() });
+      setCenters(prev => prev.map(c => (c.id === centerId ? { ...c, [field]: newDate } : c)));
+      toast.success(`Muddat ${newDate.toLocaleDateString('uz-UZ')} gacha uzaytirildi`);
+    } catch (err) {
+      console.error('Extend error:', err);
+      toast.error('Xatolik: ' + err.message);
+    }
+    setActionLoading(null);
+  };
+
+  // Markaz turi — /pricing sahifasida qaysi tariflar ko'rsatilishini belgilaydi
+  // (solo → Solo+Pro, center → Basic+Pro). Yangi ro'yxatdan o'tganlarda avtomatik
+  // qo'yiladi; eski markazlarda qo'lda to'g'rilash uchun shu tanlov kerak.
+  const handleTypeChange = async (centerId, newType) => {
+    setActionLoading(centerId);
+    try {
+      await updateDoc(doc(db, 'centers', centerId), { type: newType, updatedAt: new Date() });
+      setCenters(centers.map(c => (c.id === centerId ? { ...c, type: newType } : c)));
+      toast.success(newType === 'solo' ? "Yakka o'qituvchi deb belgilandi" : "O'quv markaz deb belgilandi");
+    } catch (err) {
+      console.error('Type change error:', err);
+      toast.error('Xatolik: ' + err.message);
     }
     setActionLoading(null);
   };
@@ -152,6 +225,7 @@ const SuperAdmin = () => {
   const getSubscriptionBadge = (sub) => {
     const badges = {
       trial: { label: 'Trial', color: 'warning', icon: Clock },
+      solo: { label: 'Solo', color: 'success', icon: GraduationCap },
       basic: { label: 'Basic', color: 'info', icon: Zap },
       pro: { label: 'Pro', color: 'success', icon: Crown },
       enterprise: { label: 'Pro', color: 'primary', icon: Shield },
@@ -168,17 +242,17 @@ const SuperAdmin = () => {
     return badges[status] || badges.active;
   };
 
-  const isTrialExpired = (center) => {
-    if (center.subscription !== 'trial' || !center.trialEndsAt) return false;
-    const trialEnd = center.trialEndsAt?.toDate ? center.trialEndsAt.toDate() : new Date(center.trialEndsAt);
-    return trialEnd < new Date();
-  };
-
-  const getDaysLeft = (center) => {
-    if (center.subscription !== 'trial' || !center.trialEndsAt) return null;
-    const trialEnd = center.trialEndsAt?.toDate ? center.trialEndsAt.toDate() : new Date(center.trialEndsAt);
-    const diff = Math.ceil((trialEnd - new Date()) / (1000 * 60 * 60 * 24));
-    return diff;
+  // Obuna holati (sinov ham, pullik ham) — utils/subscriptions.js → getCenterAccess
+  const accessLabel = (center) => {
+    const { state, daysLeft, endsAt } = getCenterAccess(center);
+    if (state === 'suspended') return { text: "To'xtatilgan", tone: 'text-red-600 font-semibold' };
+    if (state === 'expired') return { text: "Tugagan — faqat o'qish", tone: 'text-red-600 font-semibold' };
+    if (state === 'grace') return { text: `Imtiyoz: ${daysLeft} kun`, tone: 'text-orange-600 font-semibold' };
+    if (!endsAt) return { text: (center.subscription || 'trial') === 'trial' ? '' : 'Muddatsiz', tone: 'text-gray-400' };
+    return {
+      text: `${endsAt.toLocaleDateString('uz-UZ')} gacha · ${daysLeft} kun`,
+      tone: daysLeft <= 3 ? 'text-red-600 font-semibold' : 'text-gray-500',
+    };
   };
 
   // Filter
@@ -285,6 +359,56 @@ const SuperAdmin = () => {
           </Card>
         </div>
 
+        {/* Tarif arizalari — /pricing sahifasidan kelgan so'rovlar */}
+        {requests.length > 0 && (
+          <Card padding="p-4">
+            <h3 className="font-semibold text-gray-900 mb-3">
+              Tarif arizalari
+              {requests.some(r => r.status === 'new') && (
+                <span className="ml-2 px-2 py-0.5 text-xs font-bold bg-red-500 text-white rounded-full">
+                  {requests.filter(r => r.status === 'new').length} yangi
+                </span>
+              )}
+            </h3>
+            <div className="space-y-2">
+              {requests.map(r => (
+                <div
+                  key={r.id}
+                  className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 rounded-lg border ${
+                    r.status === 'new' ? 'bg-amber-50 border-amber-200' : 'bg-gray-50 border-gray-200'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <p className="font-medium text-gray-900 truncate">
+                      {r.centerName || r.centerId}
+                      <span className="ml-2 text-sm font-normal text-gray-500">
+                        → {SUBSCRIPTION_PLANS[r.plan]?.nameUz || r.plan}
+                      </span>
+                    </p>
+                    <p className="text-sm text-gray-500">
+                      {r.contactName ? `${r.contactName} · ` : ''}{r.contactPhone || '—'}
+                      {r.createdAt && ` · ${formatDate(r.createdAt)}`}
+                    </p>
+                    {r.note && <p className="text-sm text-gray-600 mt-1 italic">"{r.note}"</p>}
+                  </div>
+                  {r.status === 'new' ? (
+                    <Button
+                      size="sm"
+                      loading={actionLoading === r.id}
+                      onClick={() => handleRequestDone(r.id)}
+                      className="flex-shrink-0"
+                    >
+                      Bajarildi
+                    </Button>
+                  ) : (
+                    <Badge variant="success">Bajarilgan</Badge>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
         {/* Filters */}
         <Card padding="p-4">
           <div className="flex flex-col md:flex-row gap-4">
@@ -314,8 +438,9 @@ const SuperAdmin = () => {
             >
               <option value="all">Barcha tariflar</option>
               <option value="trial">Trial</option>
+              <option value="solo">Solo (100,000 so'm)</option>
               <option value="basic">Asosiy (99,000 so'm)</option>
-              <option value="pro">Pro (249,000 so'm)</option>
+              <option value="pro">Pro (199,000 so'm)</option>
             </select>
           </div>
         </Card>
@@ -342,8 +467,8 @@ const SuperAdmin = () => {
                   const stats = centerStats[center.id] || {};
                   const subBadge = getSubscriptionBadge(center.subscription);
                   const statusBadge = getStatusBadge(center.status);
-                  const daysLeft = getDaysLeft(center);
-                  const expired = isTrialExpired(center);
+                  const access = accessLabel(center);
+                  const expired = ['expired', 'suspended'].includes(getCenterAccess(center).state);
                   const isLoading = actionLoading === center.id;
                   
                   return (
@@ -365,10 +490,8 @@ const SuperAdmin = () => {
                             <subBadge.icon className="w-3 h-3" />
                             {subBadge.label}
                           </Badge>
-                          {daysLeft !== null && (
-                            <span className={`text-xs ${daysLeft <= 3 ? 'text-red-600 font-semibold' : 'text-gray-500'}`}>
-                              {expired ? 'Tugagan!' : `${daysLeft} kun qoldi`}
-                            </span>
+                          {access.text && (
+                            <span className={`text-xs whitespace-nowrap ${access.tone}`}>{access.text}</span>
                           )}
                         </div>
                       </td>
@@ -408,11 +531,33 @@ const SuperAdmin = () => {
                             className="text-xs border rounded px-2 py-1 disabled:opacity-50"
                           >
                             <option value="trial">Trial</option>
+                            <option value="solo">Solo</option>
                             <option value="basic">Basic</option>
                             <option value="pro">Pro</option>
-                            <option value="pro">Pro (249,000 so'm)</option>
                           </select>
-                          
+
+                          {/* To'lov qabul qilinganda — obunani 30 kunga uzaytirish */}
+                          <button
+                            onClick={() => handleExtend(center.id, 30)}
+                            disabled={isLoading}
+                            className="text-xs px-2 py-1 border border-green-300 text-green-700 hover:bg-green-50 rounded whitespace-nowrap disabled:opacity-50"
+                            title="Obunani 30 kunga uzaytirish (to'lov qabul qilinganda)"
+                          >
+                            +30 kun
+                          </button>
+
+                          {/* Markaz turi — /pricing da qaysi tariflar ko'rinishini belgilaydi */}
+                          <select
+                            value={center.type || 'center'}
+                            onChange={(e) => handleTypeChange(center.id, e.target.value)}
+                            disabled={isLoading}
+                            className="text-xs border rounded px-2 py-1 disabled:opacity-50"
+                            title="Markaz turi — tarif sahifasida qaysi tariflar ko'rsatilishini belgilaydi"
+                          >
+                            <option value="center">Markaz</option>
+                            <option value="solo">Yakka</option>
+                          </select>
+
                           {center.status === 'active' ? (
                             <button 
                               onClick={() => handleStatusChange(center.id, 'suspended')}

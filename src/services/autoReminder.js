@@ -13,6 +13,7 @@
 
 import { sendTelegramMessage, buildPaymentReminderText } from './telegram';
 import { messagesAPI, studentsAPI } from './api';
+import { computeStudentDebt, toZonedYMD } from '../utils/studentDebt';
 
 // ==================== PURE HELPERS ====================
 
@@ -23,8 +24,11 @@ const currentMonthKey = () => {
 
 /**
  * Returns true if the student should receive a reminder today.
+ *
+ * @param knownDebt  berilsa (to'liq hisoblangan qarz, fullDebt), DB yozuvlari
+ *                   o'rniga shu ishlatiladi.
  */
-export const shouldRemind = (student, monthlyBills, settings) => {
+export const shouldRemind = (student, monthlyBills, settings, knownDebt) => {
   if (student.isFree) return false;
   if (student.status !== 'active') return false;
 
@@ -39,6 +43,8 @@ export const shouldRemind = (student, monthlyBills, settings) => {
   const reminderDays  = parseInt(settings?.paymentReminderDays) || 3;
   const todayDate     = new Date().getDate();
   if (todayDate < paymentDay - reminderDays) return false;
+
+  if (knownDebt !== undefined) return knownDebt > 0;
 
   // Has any unpaid debt (current month or older)?
   const cm = currentMonthKey();
@@ -64,14 +70,46 @@ export const calcDebt = (studentId, monthlyBills) => {
 };
 
 /**
+ * To'lovlar sahifasidagi bilan bir xil to'liq qarz: DB yozuvlari + yozuvi
+ * yo'q davrlar (guruh narxi bo'yicha). Hisoblash — utils/studentDebt.js.
+ *
+ * NEGA: calcDebt faqat DB yozuvlarini sanaydi, yozuv esa faqat to'lov
+ * qilinganda paydo bo'ladi. Natijada umuman to'lanmagan oy uchun eslatma
+ * HECH QACHON chiqmasdi — aynan eng kerakli holatda.
+ */
+export const fullDebt = (student, group, monthlyBills, settings, groups, payments) =>
+  computeStudentDebt({
+    student,
+    group,
+    bills: monthlyBills.filter(b => b.studentId === student.id),
+    settings: settings || {},
+    today: toZonedYMD(new Date()),
+    // Berilsa — hisoblar tizimidan oldingi to'lovlar hisobga aylantiriladi
+    // (aks holda o'sha oylar soxta qarz bo'ladi). Idempotent: sahifa
+    // allaqachon aylantirgan hisoblar bilan ham xavfsiz.
+    payments: payments ? payments.filter(p => p.studentId === student.id) : undefined,
+    groups,
+  }).debt;
+
+/**
  * Filter the full student list to those who need reminders today.
  * Returns enriched objects: { ...student, debt }
+ *
+ * @param groups    berilsa, qarz To'lovlar sahifasi bilan bir xil hisoblanadi
+ *                  (fullDebt). Berilmasa — avvalgidek faqat DB yozuvlari.
+ * @param payments  eski (hisobi yo'q) to'lovlarni hisobga aylantirish uchun
  */
-export const getPendingReminders = (students, monthlyBills, settings) =>
-  students
-    .filter(s => shouldRemind(s, monthlyBills, settings))
-    .map(s => ({ ...s, debt: calcDebt(s.id, monthlyBills) }))
+export const getPendingReminders = (students, monthlyBills, settings, groups, payments) => {
+  const withDebt = students.map(s => ({
+    ...s,
+    debt: groups
+      ? fullDebt(s, groups.find(g => g.id === s.groupId) || null, monthlyBills, settings, groups, payments)
+      : calcDebt(s.id, monthlyBills),
+  }));
+  return withDebt
+    .filter(s => shouldRemind(s, monthlyBills, settings, groups ? s.debt : undefined))
     .sort((a, b) => b.debt - a.debt); // highest debt first
+};
 
 // ==================== SENDER ====================
 

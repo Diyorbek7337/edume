@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react';
-import { Save, Building, Phone, Clock, Percent, Users, Wallet, BookOpen, Plus, X, CheckCircle, AlertCircle, RefreshCw, ExternalLink, Eye, EyeOff } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Save, Building, Phone, Clock, Percent, Users, Wallet, BookOpen, Plus, X, CheckCircle, AlertCircle, RefreshCw, ExternalLink, Eye, EyeOff, CreditCard, ArrowRight } from 'lucide-react';
 import { Card, Button, Input, Loading, Select } from '../components/common';
-import { settingsAPI, usersAPI } from '../services/api';
+import { settingsAPI, usersAPI, studentsAPI } from '../services/api';
 import { toast } from 'react-toastify';
-import { getBotInfo } from '../services/telegram';
+import { getBotInfo, getUpdates, parseRegistrations, sendTelegramMessage } from '../services/telegram';
 import { useAuth } from '../contexts/AuthContext';
-import { auth } from '../services/firebase';
+import { SUBSCRIPTION_PLANS, formatPrice, trialDaysLeft, isTrialExpired } from '../utils/subscriptions';
 
 const Settings = () => {
-  const { centerId } = useAuth();
+  const { centerId, centerData } = useAuth();
   const [settings, setSettings] = useState({
     centerName: '',
     phone: '',
@@ -56,8 +57,8 @@ const Settings = () => {
   const [botInfo, setBotInfo] = useState(null);
   const [copiedToken, setCopiedToken] = useState(false);
   const [showToken, setShowToken] = useState(false);
-  const [webhookSetting, setWebhookSetting] = useState(false);
-  const [webhookStatus, setWebhookStatus] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null); // { matched, total }
   const [linkedStats, setLinkedStats] = useState(null); // { linked, total }
   const [statsLoading, setStatsLoading] = useState(false);
 
@@ -126,37 +127,78 @@ const Settings = () => {
     }
   };
 
-  const handleSetWebhook = async () => {
+  const handleSyncTelegram = async () => {
     if (!settings.telegramBotToken) {
-      toast.error("Avval bot tokenini saqlang");
+      toast.error("Avval bot tokenini kiriting va saqlang");
       return;
     }
-    if (!centerId) {
-      toast.error("Markaz ID topilmadi");
-      return;
-    }
-    setWebhookSetting(true);
-    setWebhookStatus(null);
+    setSyncing(true);
+    setSyncResult(null);
     try {
-      const project = import.meta.env.VITE_FIREBASE_PROJECT_ID;
-      const idToken = await auth.currentUser?.getIdToken();
-      const url = `https://us-central1-${project}.cloudfunctions.net/setupWebhook`;
-      const res = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${idToken}` },
-      });
-      const text = await res.text();
-      if (res.ok) {
-        setWebhookStatus('ok');
-        toast.success("Webhook muvaffaqiyatli o'rnatildi!");
-      } else {
-        setWebhookStatus('error');
-        toast.error("Webhook xatoligi: " + text);
+      const updates = await getUpdates(settings.telegramBotToken);
+      const registrations = parseRegistrations(updates);
+
+      if (registrations.length === 0) {
+        toast.info("Hali hech kim /start yubormagan");
+        setSyncing(false);
+        return;
       }
+
+      const [students, allUsers] = await Promise.all([
+        studentsAPI.getAll(),
+        usersAPI.getAll(),
+      ]);
+
+      const centerName = settings.centerName || "O'quv markaz";
+      let matched = 0;
+      for (const reg of registrations) {
+        const cleanPhone = reg.phone.replace(/\D/g, '');
+        let isNew = false;
+
+        // Student yozuviga parentTelegramChatId saqlash
+        const student = students.find(s => {
+          const sp = (s.parentPhone || '').replace(/\D/g, '');
+          return sp && (sp === cleanPhone || sp.endsWith(cleanPhone) || cleanPhone.endsWith(sp));
+        });
+        if (student && student.parentTelegramChatId !== reg.chatId) {
+          await studentsAPI.update(student.id, { parentTelegramChatId: reg.chatId });
+          isNew = true;
+          matched++;
+        }
+
+        // Parent user yozuviga telegramId saqlash
+        const parentUser = allUsers.find(u => {
+          if (u.role !== 'parent') return false;
+          const up = (u.phone || '').replace(/\D/g, '');
+          return up && (up === cleanPhone || up.endsWith(cleanPhone) || cleanPhone.endsWith(up));
+        });
+        if (parentUser && parentUser.telegramId !== reg.chatId) {
+          await usersAPI.update(parentUser.id, { telegramId: reg.chatId });
+        }
+
+        // Yangi ulanган ota-onaga xush kelibsiz xabar yuborish
+        if (isNew) {
+          const studentName = student?.fullName || '';
+          const welcomeText =
+            `✅ <b>Siz muvaffaqiyatli ro'yxatdan o'tdingiz!</b>\n\n` +
+            `O'quv markaz: <b>${centerName}</b>\n` +
+            (studentName ? `O'quvchi: <b>${studentName}</b>\n` : '') +
+            `\nEndi to'lov eslatmalari va muhim xabarlar shu yerga yuboriladi.`;
+          try {
+            await sendTelegramMessage(settings.telegramBotToken, reg.chatId, welcomeText);
+          } catch {
+            // Xabar ketmasa ham sinxronlash to'xtatilmaydi
+          }
+        }
+      }
+
+      setSyncResult({ matched, total: registrations.length });
+      toast.success(`Sinxronlandi: ${matched} ta yangi ota-ona ulandi (jami ${registrations.length} ta /start topildi)`);
+      fetchLinkedStats();
     } catch (err) {
-      setWebhookStatus('error');
-      toast.error("Xatolik: " + err.message);
+      toast.error("Sinxronlashda xatolik: " + err.message);
     } finally {
-      setWebhookSetting(false);
+      setSyncing(false);
     }
   };
 
@@ -171,6 +213,38 @@ const Settings = () => {
         </div>
         <Button icon={Save} loading={saving} onClick={handleSave}>Saqlash</Button>
       </div>
+
+      {/* Tarif — formadan TASHQARIDA, chunki u "Saqlash" oqimiga tegishli emas.
+          To'liq taqqoslash /pricing sahifasida. */}
+      <Card>
+        <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+          <CreditCard className="w-5 h-5 text-primary-600" /> Tarif
+        </h3>
+        {(() => {
+          const sub = centerData?.subscription || 'trial';
+          const plan = SUBSCRIPTION_PLANS[sub];
+          const expired = isTrialExpired(centerData);
+          const daysLeft = trialDaysLeft(centerData);
+          return (
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <p className="font-medium text-gray-900">{plan?.nameUz || sub}</p>
+                <p className="text-sm text-gray-500">
+                  {sub === 'trial'
+                    ? (expired ? 'Sinov muddati tugadi' : `${daysLeft} kun qoldi`)
+                    : formatPrice(plan)}
+                </p>
+              </div>
+              <Link
+                to="/pricing"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium rounded-lg transition self-start"
+              >
+                Tariflarni ko'rish <ArrowRight className="w-4 h-4" />
+              </Link>
+            </div>
+          );
+        })()}
+      </Card>
 
       <form onSubmit={handleSave} className="space-y-6">
         {/* O'quv markaz ma'lumotlari */}
@@ -589,33 +663,28 @@ const Settings = () => {
                     </button>
                   </div>
 
-                  {/* Webhook tugmasi */}
+                  {/* Sinxronlash tugmasi */}
                   <div className="flex flex-wrap items-center gap-3 pt-1">
                     <Button
                       type="button"
                       variant="primary"
-                      loading={webhookSetting}
-                      onClick={handleSetWebhook}
+                      loading={syncing}
+                      onClick={handleSyncTelegram}
                       disabled={!settings.telegramBotToken}
                     >
-                      🔗 Webhookni o'rnatish
+                      <RefreshCw className="w-4 h-4 mr-1" /> Sinxronlash
                     </Button>
 
-                    {webhookStatus === 'ok' && (
+                    {syncResult && (
                       <span className="flex items-center gap-1 text-sm text-green-700 font-medium">
-                        <CheckCircle className="w-4 h-4" /> Webhook ulandi
-                      </span>
-                    )}
-                    {webhookStatus === 'error' && (
-                      <span className="flex items-center gap-1 text-sm text-red-600 font-medium">
-                        <AlertCircle className="w-4 h-4" /> Webhook xatoligi
+                        <CheckCircle className="w-4 h-4" /> {syncResult.matched} ta ulandi
                       </span>
                     )}
                   </div>
 
                   <p className="text-xs text-gray-400">
-                    Ota-onalar botga <code className="bg-gray-100 px-1 rounded">/start</code> yuborib, telefon raqamini yuborganda
-                    — tizimga <strong>avtomatik</strong> ulanadi. Qo'lda sinxronlash kerak emas.
+                    Ota-onalar botga <code className="bg-gray-100 px-1 rounded">/start</code> yuborgandan so'ng —
+                    "Sinxronlash" tugmasini bosib chat ID-larni yangilang.
                   </p>
 
                   {/* Avtomatik bildirishnomalar */}

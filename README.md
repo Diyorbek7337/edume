@@ -1,181 +1,139 @@
-# EduCenter - O'quv Markaz Boshqaruv Tizimi
+# EduCenter — o'quv markazlar va yakka o'qituvchilar uchun boshqaruv tizimi
 
-## 🚀 O'rnatish
+Multi-tenant SaaS: har bir o'quv markaz (yoki repetitor) `/register` orqali o'zi ro'yxatdan o'tadi, 30 kunlik sinov oladi, keyin tarif tanlaydi. Ota-onalar va o'quvchilar uchun Telegram bot alohida loyihada (`edu-center-bot`).
 
-### 1. Loyihani ochish
+**Stack:** React 18 + Vite (PWA), Tailwind, Firebase (Auth, Firestore, Storage, Cloud Functions), i18n (uz/ru/en), Sentry, App Check.
+
+---
+
+## Tariflar va obuna muddati
+
+| Tarif | Narx | O'quvchi | O'qituvchi | Guruh | Admin |
+|---|---|---|---|---|---|
+| Sinov (trial) | bepul, 30 kun | cheksiz | cheksiz | cheksiz | cheksiz |
+| Yakka o'qituvchi (solo) | 100 000 so'm/oy | 150 | 1 | 12 | 1 |
+| Asosiy (basic) | 99 000 so'm/oy | 100 | 10 | 20 | 2 |
+| Pro | 199 000 so'm/oy | cheksiz | cheksiz | cheksiz | cheksiz |
+
+Narx va limitlar manbai: `src/utils/subscriptions.js` va `functions/subscriptionLimits.js`. Ikkalasini qo'lda bir xil tuting.
+
+**Muddat qanday ishlaydi:**
+
+- Sinovda muddat `centers/{id}.trialEndsAt`, pullik tarifda `centers/{id}.paidUntil` maydonida turadi.
+- Muddat tugagach **3 kunlik imtiyoz** beriladi. Bu davrda hamma narsa ishlaydi, faqat ogohlantirish banneri chiqadi.
+- Imtiyoz tugagach markaz **faqat ko'rish rejimiga** o'tadi. Ma'lumotlar saqlanadi va ko'rinadi, lekin yangi o'quvchi, to'lov, davomat, baho kiritib bo'lmaydi. Bot ham ota-onalarga xabar yubormaydi. Direktor esa `/pricing` sahifasidan tarif arizasini yubora oladi.
+- `status: 'suspended'` bo'lgan markaz ham xuddi shunday, lekin darhol, faqat ko'rish rejimida bo'ladi.
+- Pullik markazda `paidUntil` yo'q bo'lsa (eski mijozlar), muddatsiz ishlaydi.
+
+Server tomonda cheklov `firestore.rules` (`centerWritable`) orqali ishlaydi. Brauzer tomonda `src/services/firebase.js` (`assertCenterWritable`) tushunarli xato xabarini ko'rsatadi. Bir xil mantiq 3 joyda yozilgan: `firestore.rules`, `src/utils/subscriptions.js` (`getCenterAccess`) va bot loyihasidagi `functions/centerAccess.js`.
+
+### Mijoz to'lov qilganda (super_admin)
+
+1. `/super-admin` sahifasini oching va markazni toping.
+2. **Tarif** tanlovidan kerakli tarifni tanlang. Birinchi marta pullik tarif berilganda `paidUntil` avtomatik ravishda bugundan +30 kun bo'ladi.
+3. Keyingi oylarda to'lov kelganda **«+30 kun»** tugmasini bosing. Muddat hali tugamagan bo'lsa, 30 kun joriy muddat ustiga qo'shiladi. Tugagan bo'lsa, bugundan boshlab hisoblanadi.
+4. Tarif arizasini «bajarildi» deb belgilang.
+
+Direktor tarifni, muddatni, limitlarni yoki hisoblagichlarni o'zi o'zgartira olmaydi. Buni `firestore.rules` bloklaydi.
+
+---
+
+## Mahalliy ishga tushirish
+
 ```bash
-unzip edu-center-v2.zip
-cd edu-center
 npm install
+cp .env.example .env        # Firebase web-app konfiguratsiyasini to'ldiring
+npm run dev                 # http://localhost:5173
 ```
 
-### 2. Firebase sozlash
+`.env` maydonlari: `VITE_FIREBASE_*` (majburiy), `VITE_RECAPTCHA_SITE_KEY` (App Check, prod'da tavsiya etiladi), `VITE_SENTRY_DSN` (ixtiyoriy).
 
-#### Firebase Console'da:
-1. https://console.firebase.google.com ga kiring
-2. Yangi loyiha yarating (yoki mavjudini tanlang)
-3. **Authentication** > Sign-in method > **Email/Password** ni yoqing
-4. **Firestore Database** yarating (test mode yoki production)
-5. Project Settings > Your apps > **Web app** qo'shing
-6. Konfiguratsiyani nusxalang
+Cloud Functions uchun `functions/.env` fayli kerak (`functions/.env.example`'ga qarang).
 
-### 3. .env fayl yaratish
-Loyiha papkasida `.env` fayl yarating:
-```
-VITE_FIREBASE_API_KEY=AIzaSyXXXXXXXXXXXXXXXXXXXX
-VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=your-project-id
-VITE_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
-VITE_FIREBASE_MESSAGING_SENDER_ID=123456789
-VITE_FIREBASE_APP_ID=1:123456789:web:abcdef
-```
+### Birinchi super_admin
 
-### 4. ⚠️ MUHIM: Birinchi Direktor yaratish
+1. Firebase Console → Authentication → foydalanuvchi qo'shing va uning UID'sini nusxalang.
+2. Firestore → `users/{UID}` hujjatini yarating: `{ role: "super_admin", fullName: "...", email: "..." }`.
+3. `/login` orqali kiring. Sizni avtomatik `/super-admin` sahifasiga yo'naltiradi.
 
-#### A) Firebase Console > Authentication > Users > Add user:
-- Email: `director@educenter.uz` (yoki boshqa email)
-- Password: `parol123` (yoki boshqa parol)
-- **"Add user" tugmasini bosing**
-- Yaratilgan **User UID** ni nusxalang (masalan: `abc123xyz`)
+Markazlar (direktorlar) `/register` sahifasi orqali o'zlari ro'yxatdan o'tadi, qo'lda yaratish shart emas.
 
-#### B) Firebase Console > Firestore Database:
-1. **"Start collection"** tugmasini bosing
-2. Collection ID: `users`
-3. Document ID: **yuqoridagi User UID** (`abc123xyz`)
-4. Maydonlarni qo'shing:
+---
 
-| Maydon | Turi | Qiymat |
-|--------|------|--------|
-| fullName | string | Direktor Ismi |
-| email | string | director@educenter.uz |
-| role | string | **director** |
-| phone | string | +998901234567 |
+## Deploy
 
-5. **"Save"** tugmasini bosing
-
-### 5. Firestore Rules ni yuklash
-
-Firebase Console > Firestore > Rules bo'limiga `firestore.rules` faylidagi kodlarni nusxalang va **"Publish"** bosing.
-
-### 6. Loyihani ishga tushirish
 ```bash
-npm run dev
+npm run test:run            # unit testlar
+npm run test:rules          # firestore.rules testlari (Java 11+ va Firebase emulator kerak)
+npm run build
+firebase deploy --only firestore:rules,firestore:indexes,functions:crm,hosting
 ```
 
-Brauzerda: http://localhost:5173
+### ⚠️ Shu relizni deploy qilishdan oldin (bir martalik)
 
----
+Yangi qoidalar sinov muddati allaqachon tugagan markazlarni darhol faqat ko'rish rejimiga o'tkazadi. Ilgari muddat hech narsani bloklamagan edi. Shuning uchun:
 
-## 👥 Foydalanuvchi rollari va huquqlari
+```bash
+# 1) Kimga ta'sir qilishini ko'ring (hech narsa yozmaydi):
+node functions/scripts/subscriptionReport.js --project=<firebase-project-id>
 
-| Rol | Qiymat | Huquqlar |
-|-----|--------|----------|
-| **Direktor** | `director` | Barcha huquqlar + Admin yaratish + Sozlamalar |
-| **Admin** | `admin` | O'qituvchi, O'quvchi, Guruh, Lid, To'lov boshqarish |
-| **O'qituvchi** | `teacher` | Davomat olish, Baho qo'yish, Xabar yuborish |
-| **O'quvchi** | `student` | O'z ko'rsatkichlarini ko'rish, Taklif yuborish |
-| **Ota-ona** | `parent` | Farzand ko'rsatkichlarini ko'rish |
-
----
-
-## 🔄 Tizim ishlash tartibi
-
-```
-1. Firebase Console'da Direktor yarating
-           ↓
-2. Direktor tizimga kiradi
-           ↓
-3. Direktor → "Adminlar" sahifasidan Admin qo'shadi
-           ↓
-4. Admin tizimga kiradi (o'z email/parol bilan)
-           ↓
-5. Admin → O'qituvchi, O'quvchi, Guruh qo'shadi
-           ↓
-6. O'qituvchi → Davomat oladi, Baho qo'yadi
-           ↓
-7. O'quvchi/Ota-ona → Ko'rsatkichlarini ko'radi
+# 2) Kerak bo'lsa, muddati o'tgan barcha sinovlarga bugundan +7 kun bering
+#    (mijozlarga tarif tanlashga vaqt beriladi):
+node functions/scripts/subscriptionReport.js --project=<id> --extend-expired-trials=7
 ```
 
----
+Hisobotda «Pullik, lekin paidUntil yo'q» deb chiqqan markazlar muddatsiz ishlayveradi. Ularga SuperAdmin'da «+30 kun» bosib, to'lov sanasini boshlab qo'ying.
 
-## 📱 Sahifalar
+Rules testlarini deploy'dan oldin albatta ishga tushiring: `npm run test:rules`. Ota-onaning to'lovlarni ko'rish qoidasi o'zgargan, test shu holatni tekshiradi.
 
-### Direktor ko'radi:
-- ✅ Bosh sahifa (Dashboard)
-- ✅ **Adminlar** - Admin qo'shish/o'chirish
-- ✅ O'quvchilar
-- ✅ O'qituvchilar
-- ✅ Guruhlar
-- ✅ Lidlar
-- ✅ To'lovlar
-- ✅ Davomat
-- ✅ Baholar
-- ✅ Xabarlar
-- ✅ Hisobotlar
-- ✅ **Sozlamalar**
-- ✅ Profil
+### ⚠️ O'quvchi ma'lumotlari maxfiyligi — deploy TARTIBI muhim
 
-### Admin ko'radi:
-- ✅ Bosh sahifa
-- ✅ O'quvchilar - Qo'shish/Tahrirlash/O'chirish
-- ✅ O'qituvchilar - Qo'shish/Tahrirlash/O'chirish
-- ✅ Guruhlar - Qo'shish/Tahrirlash/O'chirish
-- ✅ Lidlar
-- ✅ To'lovlar
-- ✅ Davomat
-- ✅ Baholar
-- ✅ Xabarlar
-- ✅ Hisobotlar
-- ✅ Profil
+O'quvchi va ota-ona endi markazdagi barcha talabalar ro'yxatini (telefon, ota-ona telefoni, manzil, chegirma bilan) ololmaydi. Ular faqat o'z yozuvini ko'radi:
 
-### O'qituvchi ko'radi:
-- ✅ Bosh sahifa
-- ✅ Guruhlarim
-- ✅ O'quvchilarim
-- ✅ Davomat olish
-- ✅ Baho qo'yish
-- ✅ Xabarlar
-- ✅ Profil
+- o'quvchi — `students.userId` orqali;
+- ota-ona — `users.childIds` orqali.
 
-### O'quvchi/Ota-ona ko'radi:
-- ✅ Bosh sahifa (Ko'rsatkichlar)
-- ✅ Baholarim
-- ✅ Davomatim
-- ✅ To'lovlarim
-- ✅ Taklif/Shikoyat yuborish
-- ✅ Xabarlar
-- ✅ Profil
+Sinfdoshlarning esa faqat ismi, guruhi va holati ko'rinadi (`centers/{id}/student_directory`). Bog'lanishlarni Cloud Functions avtomatik yuritadi. Mavjud ma'lumotlarni esa bir marta migratsiya qilish kerak. Deploy qadamlarini **shu tartibda** bajaring:
+
+```bash
+# 1) Avval functions (yangi triggerlar: onStudentWrittenPrivacy, onUserCreatedLink)
+firebase deploy --only functions:crm
+
+# 2) Mavjud ma'lumotlar: katalog + bog'lanishlar. Avval hisobotni ko'ring:
+node functions/scripts/backfillStudentPrivacy.js --project=<id> --dry-run
+node functions/scripts/backfillStudentPrivacy.js --project=<id>
+
+# 3) Hisobotdagi "⚠" ro'yxatini ko'rib chiqing: farzandi topilmagan ota-onalar va
+#    talaba yozuvi topilmagan o'quvchilar. Students sahifasida ularning telefoni yoki
+#    "Ota-ona telefoni" maydonini to'g'rilang — trigger o'zi bog'laydi.
+
+# 4) Shundan keyingina rules va sayt
+firebase deploy --only firestore:rules,hosting
+```
+
+Rules deploy qilinib, backfill qilinmagan bo'lsa, bog'lanmagan o'quvchi va ota-onalar o'z ma'lumotlarini ko'rmay qoladi.
 
 ---
 
-## 🔧 Texnologiyalar
+## Rollar
 
-- React 18 + Vite
-- Tailwind CSS
-- Firebase (Auth + Firestore)
-- React Router v6
-- Recharts (grafiklar)
-- Lucide Icons
-
----
-
-## ❓ Muammolar va yechimlari
-
-### "Missing or insufficient permissions" xatosi
-**Sabab:** Firestore rules noto'g'ri yoki users kolleksiyasida rol yo'q
-
-**Yechim:**
-1. Firebase Console > Firestore > Rules - firestore.rules ni nusxalang
-2. users kolleksiyasida document ID = Firebase Auth User UID bo'lishi kerak
-3. `role` maydoni aniq `director`, `admin`, `teacher`, `student`, `parent` bo'lishi kerak
-
-### Login qilganda noto'g'ri dashboard ochiladi
-**Sabab:** users kolleksiyasida role maydoni noto'g'ri
-
-**Yechim:** role maydoni qiymatini tekshiring - katta-kichik harflar muhim!
+| Rol | Nima qila oladi |
+|---|---|
+| `super_admin` | Barcha markazlar, tariflar, muddatlar |
+| `director` | O'z markazida hamma narsa, adminlar, sozlamalar, tarif arizasi |
+| `admin` | Direktor bergan modullar (`permissions`) doirasida |
+| `teacher` | O'z guruhlari: davomat, baho, uy vazifasi, test |
+| `student` / `parent` | O'z (farzandining) baholari, davomati, to'lovlari, jadvali |
 
 ---
 
-## 📞 Yordam kerakmi?
+## Loyiha tuzilmasi
 
-Savollar bo'lsa, murojaat qiling!
+```
+src/pages/            sahifalar (Students, Payments, Attendance, ...)
+src/services/api.js   Firestore bilan barcha ishlash (markaz kolleksiyalari)
+src/utils/            tariflar, qarz hisobi, validatsiya
+functions/            Cloud Functions (codebase: crm) — limit hisoblagichlari, daromad statistikasi, lidlar
+functions/scripts/    bir martalik migratsiya va hisobot skriptlari
+tests/rules/          firestore.rules testlari (emulator)
+```

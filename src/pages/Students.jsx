@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Edit, Trash2, Eye, Download, Upload, Copy, Check, Gift, AlertTriangle, FileSpreadsheet, GraduationCap, Send, CheckSquare, Square, Users, X, ChevronDown, Archive, ArchiveRestore, KeyRound } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Search, Plus, Edit, Trash2, Eye, Download, Upload, Copy, Check, Gift, AlertTriangle, FileSpreadsheet, GraduationCap, Send, MessageCircle, Smartphone, CheckSquare, Square, Users, X, ChevronDown, Archive, ArchiveRestore, KeyRound } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Avatar, Table, Modal, Loading, EmptyState } from '../components/common';
 import { studentsAPI, groupsAPI, usersAPI, settingsAPI, paymentsAPI, attendanceAPI, gradesAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
-import { formatPhone, formatMoney } from '../utils/helpers';
+import { formatPhone, formatMoney, copyToClipboard } from '../utils/helpers';
 import { validateStudentForm, hasErrors } from '../utils/validation';
 import FieldError from '../components/common/FieldError';
 import { checkLimit, getLimitMessage, SUBSCRIPTION_PLANS } from '../utils/subscriptions';
@@ -16,19 +17,24 @@ import { auth } from '../services/firebase';
 
 const Students = () => {
   const { userData, role, centerData } = useAuth();
+  const [searchParams] = useSearchParams();
   const [students, setStudents] = useState([]);
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
   const fileInputRef = useRef(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterGroup, setFilterGroup] = useState('');
-  const [filterStatus, setFilterStatus] = useState('active'); // active, graduated, all
+  const [filterStatus, setFilterStatus] = useState(() => {
+    const s = searchParams.get('status');
+    return s === 'archived' || s === 'graduated' || s === 'all' ? s : 'active';
+  });
   
   const [showAddModal, setShowAddModal] = useState(false);
   const [showViewModal, setShowViewModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteReason, setDeleteReason] = useState('');
+  const [editPausedPeriods, setEditPausedPeriods] = useState([]);
   const [showCredentialsModal, setShowCredentialsModal] = useState(false);
   const [showLimitModal, setShowLimitModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -51,7 +57,8 @@ const Students = () => {
       paymentDay: String(today.getDate()), // Boshlash sanasi kunidan avtomatik
       referredBy: '',
       discount: '0',
-      isFree: false
+      isFree: false,
+      courseDurationMonths: ''
     };
   });
   const [credentials, setCredentials] = useState({ studentEmail: '', studentPassword: '', parentEmail: '', parentPassword: '' });
@@ -59,6 +66,7 @@ const Students = () => {
   const [formError, setFormError] = useState('');
   const [formErrors, setFormErrors] = useState({});
   const [copied, setCopied] = useState('');
+  const [shareTarget, setShareTarget] = useState(null); // Telegram havolasini ulashish oynasi
   const [telegramBotUsername, setTelegramBotUsername] = useState('');
 
   // Bulk actions state
@@ -221,7 +229,8 @@ const Students = () => {
       paymentType: 'full_month',
       referredBy: '',
       discount: '0',
-      isFree: false
+      isFree: false,
+      courseDurationMonths: ''
     });
     setFormError('');
     setFormErrors({});
@@ -382,7 +391,8 @@ const Students = () => {
         paymentDay: parseInt(formData.paymentDay) || 1,
         paymentType: formData.paymentType || 'full_month',
         referredBy: formData.referredBy || null,
-        discount: parseInt(formData.discount) || 0
+        discount: parseInt(formData.discount) || 0,
+        courseDurationMonths: formData.courseDurationMonths ? parseInt(formData.courseDurationMonths) : null
       });
       
       // 2.5 Tavsiya mukofoti - agar tavsiya qilgan o'quvchi bo'lsa
@@ -531,11 +541,14 @@ const Students = () => {
       const oldGroupId = selectedStudent.groupId;
       const newGroupId = formData.groupId;
       
+      const cleanedPaused = editPausedPeriods.filter(p => p.from);
       await studentsAPI.update(selectedStudent.id, {
         ...formData,
         groupName: group?.name || '',
         paymentDay: parseInt(formData.paymentDay) || 1,
         discount: parseInt(formData.discount) || 0,
+        courseDurationMonths: formData.courseDurationMonths ? parseInt(formData.courseDurationMonths) : null,
+        pausedPeriods: cleanedPaused,
       });
       
       if (oldGroupId !== newGroupId) {
@@ -635,11 +648,15 @@ const Students = () => {
     }
     setFormLoading(true);
     try {
+      const today = new Date().toISOString().split('T')[0];
+      const currentPaused = selectedStudent.pausedPeriods || [];
+      const newPaused = [...currentPaused, { from: today, to: null }];
       await studentsAPI.update(selectedStudent.id, {
         status: 'archived',
         archivedAt: new Date().toISOString(),
         archiveReason: deleteReason.trim(),
         archivedBy: userData?.id,
+        pausedPeriods: newPaused,
       });
       setStudents(students.map(s =>
         s.id === selectedStudent.id
@@ -664,11 +681,23 @@ const Students = () => {
   // Arxivdan tiklash
   const handleRestore = async (student) => {
     try {
+      const today = new Date().toISOString().split('T')[0];
+      const archivedDate = student.archivedAt ? student.archivedAt.split('T')[0] : null;
+      const currentPaused = student.pausedPeriods || [];
+      const newPaused = [...currentPaused];
+      let lastOpenIdx = -1;
+      newPaused.forEach((p, i) => { if (!p.to) lastOpenIdx = i; });
+      if (lastOpenIdx >= 0) {
+        newPaused[lastOpenIdx] = { ...newPaused[lastOpenIdx], to: today };
+      } else if (archivedDate) {
+        newPaused.push({ from: archivedDate, to: today });
+      }
       await studentsAPI.update(student.id, {
         status: 'active',
         archivedAt: null,
         archiveReason: null,
         archivedBy: null,
+        pausedPeriods: newPaused,
       });
       setStudents(students.map(s =>
         s.id === student.id ? { ...s, status: 'active', archiveReason: null } : s
@@ -767,15 +796,23 @@ const Students = () => {
       paymentDay: student.paymentDay?.toString() || '1',
       paymentType: student.paymentType || 'full_month',
       discount: student.discount?.toString() || '0',
-      isFree: student.isFree || false
+      isFree: student.isFree || false,
+      courseDurationMonths: student.courseDurationMonths?.toString() || ''
     });
+    setEditPausedPeriods(student.pausedPeriods || []);
     setFormError('');
     setFormErrors({});
     setShowEditModal(true);
   };
 
-  const copyToClipboard = (text, field) => {
-    navigator.clipboard.writeText(text);
+  // Nomi ataylab copyToClipboard EMAS — modul darajasida shu nomli umumiy
+  // yordamchi import qilingan, mahalliy nom uni soya qilib qo'yardi.
+  const copyField = async (text, field) => {
+    const ok = await copyToClipboard(text);
+    if (!ok) {
+      toast.info("Nusxalab bo'lmadi — matnni qo'lda belgilab oling");
+      return;
+    }
     setCopied(field);
     setTimeout(() => setCopied(''), 2000);
   };
@@ -1258,20 +1295,11 @@ const Students = () => {
                         </span>
                       ) : telegramBotUsername ? (
                         <button
-                          onClick={() => {
-                            const link = buildDeepLink(telegramBotUsername, student.parentPhone);
-                            navigator.clipboard.writeText(link);
-                            setCopied(`tg-${student.id}`);
-                            setTimeout(() => setCopied(''), 2000);
-                            toast.success("Havola nusxalandi! Ota-onaga yuboring.");
-                          }}
+                          onClick={() => setShareTarget(student)}
                           className="inline-flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700 mt-0.5"
-                          title="Telegram ro'yxatdan o'tish havolasini nusxalash"
+                          title="Telegram ro'yxatdan o'tish havolasini ulashish"
                         >
-                          {copied === `tg-${student.id}`
-                            ? <><Check className="w-3 h-3" /> Nusxalandi</>
-                            : <><Send className="w-3 h-3" /> Havola yuborish</>
-                          }
+                          <Send className="w-3 h-3" /> Havolani ulashish
                         </button>
                       ) : null
                     )}
@@ -1438,6 +1466,18 @@ const Students = () => {
               />
               <p className="text-xs text-blue-500 mt-1">✓ Boshlash sanasidan (12 dars = 1 to'lov davri)</p>
             </div>
+            <div>
+              <Input
+                label="Kurs davomiyligi (oy, ixtiyoriy)"
+                type="number"
+                min="1"
+                max="60"
+                value={formData.courseDurationMonths}
+                onChange={(e) => setFormData({ ...formData, courseDurationMonths: e.target.value })}
+                placeholder="Masalan: 2"
+              />
+              <p className="text-xs text-gray-500 mt-1">Bo'sh qoldirsangiz — guruhda belgilangan davomiylik ishlatiladi. Faqat shu o'quvchi uchun boshqacha bo'lsa to'ldiring.</p>
+            </div>
           </div>
           <p className="text-xs text-gray-500">
             * Proporsional: Agar o'quvchi oyning o'rtasida boshlasa, birinchi oylik proporsional hisoblanadi
@@ -1552,13 +1592,13 @@ const Students = () => {
             <h4 className="font-medium text-green-800 mb-3">O'quvchi uchun:</h4>
             <div className="flex items-center justify-between bg-white p-2 rounded mb-2">
               <span className="text-sm">Login: <strong>{credentials.studentEmail}</strong></span>
-              <button onClick={() => copyToClipboard(credentials.studentEmail, 'se')} className="p-1 hover:bg-gray-100 rounded">
+              <button onClick={() => copyField(credentials.studentEmail, 'se')} className="p-1 hover:bg-gray-100 rounded">
                 {copied === 'se' ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
               </button>
             </div>
             <div className="flex items-center justify-between bg-white p-2 rounded">
               <span className="text-sm">Parol: <strong>{credentials.studentPassword}</strong></span>
-              <button onClick={() => copyToClipboard(credentials.studentPassword, 'sp')} className="p-1 hover:bg-gray-100 rounded">
+              <button onClick={() => copyField(credentials.studentPassword, 'sp')} className="p-1 hover:bg-gray-100 rounded">
                 {copied === 'sp' ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
               </button>
             </div>
@@ -1569,13 +1609,13 @@ const Students = () => {
               <h4 className="font-medium text-blue-800 mb-3">Ota-ona uchun:</h4>
               <div className="flex items-center justify-between bg-white p-2 rounded mb-2">
                 <span className="text-sm">Login: <strong>{credentials.parentEmail}</strong></span>
-                <button onClick={() => copyToClipboard(credentials.parentEmail, 'pe')} className="p-1 hover:bg-gray-100 rounded">
+                <button onClick={() => copyField(credentials.parentEmail, 'pe')} className="p-1 hover:bg-gray-100 rounded">
                   {copied === 'pe' ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
                 </button>
               </div>
               <div className="flex items-center justify-between bg-white p-2 rounded">
                 <span className="text-sm">Parol: <strong>{credentials.parentPassword}</strong></span>
-                <button onClick={() => copyToClipboard(credentials.parentPassword, 'pp')} className="p-1 hover:bg-gray-100 rounded">
+                <button onClick={() => copyField(credentials.parentPassword, 'pp')} className="p-1 hover:bg-gray-100 rounded">
                   {copied === 'pp' ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
                 </button>
               </div>
@@ -1632,6 +1672,18 @@ const Students = () => {
               ]}
             />
             <Input label="Chegirma (%)" type="number" min="0" max="100" value={formData.discount} onChange={(e) => setFormData({ ...formData, discount: e.target.value })} placeholder="0" />
+            <div>
+              <Input
+                label="Kurs davomiyligi (oy, ixtiyoriy)"
+                type="number"
+                min="1"
+                max="60"
+                value={formData.courseDurationMonths}
+                onChange={(e) => setFormData({ ...formData, courseDurationMonths: e.target.value })}
+                placeholder="Masalan: 2"
+              />
+              <p className="text-xs text-gray-500 mt-1">Bo'sh — guruhdagi davomiylik ishlatiladi</p>
+            </div>
             <Input label="Manzil" value={formData.address} onChange={(e) => setFormData({ ...formData, address: e.target.value })} />
             <Input label="Ota-ona ismi" value={formData.parentName} onChange={(e) => setFormData({ ...formData, parentName: e.target.value })} />
             <Input label="Ota-ona telefoni" value={formData.parentPhone} onChange={(e) => setFormData({ ...formData, parentPhone: e.target.value })} />
@@ -1649,6 +1701,54 @@ const Students = () => {
               <p className="text-xs text-blue-600">Bu o'quvchi uchun to'lov hisoblanmaydi</p>
             </div>
           </label>
+
+          {/* To'xtatilgan davrlar */}
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+            <p className="text-sm font-medium text-amber-800 mb-2">To'lov to'xtatilgan davrlar</p>
+            <p className="text-xs text-amber-600 mb-3">Arxivda bo'lgan yoki ta'tilda o'tkazgan oylar uchun to'lov hisoblanmaydi</p>
+            <div className="space-y-2">
+              {editPausedPeriods.map((p, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    value={p.from || ''}
+                    onChange={(e) => {
+                      const updated = [...editPausedPeriods];
+                      updated[i] = { ...updated[i], from: e.target.value };
+                      setEditPausedPeriods(updated);
+                    }}
+                    className="flex-1 px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
+                  />
+                  <span className="text-gray-400 text-sm">→</span>
+                  <input
+                    type="date"
+                    value={p.to || ''}
+                    onChange={(e) => {
+                      const updated = [...editPausedPeriods];
+                      updated[i] = { ...updated[i], to: e.target.value || null };
+                      setEditPausedPeriods(updated);
+                    }}
+                    placeholder="hozirga qadar"
+                    className="flex-1 px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setEditPausedPeriods(editPausedPeriods.filter((_, idx) => idx !== i))}
+                    className="text-red-400 hover:text-red-600 flex-shrink-0"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setEditPausedPeriods([...editPausedPeriods, { from: '', to: null }])}
+                className="text-sm text-amber-700 hover:text-amber-900 font-medium"
+              >
+                + Davr qo'shish
+              </button>
+            </div>
+          </div>
 
           <div className="flex justify-end gap-2 pt-4 border-t">
             <Button type="button" variant="ghost" onClick={() => setShowEditModal(false)}>Bekor qilish</Button>
@@ -1989,6 +2089,88 @@ const Students = () => {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Telegram havolasini ulashish.
+          MUHIM: bot ota-onaga O'ZI yozib yubora olmaydi — Telegram qoidasiga
+          ko'ra bot faqat suhbatni boshlagan odamga yoza oladi. Shuning uchun
+          havolani direktor yuboradi, ota-ona esa bosib botni ishga tushiradi. */}
+      <Modal
+        isOpen={Boolean(shareTarget)}
+        onClose={() => setShareTarget(null)}
+        title="Telegram havolasini ulashish"
+      >
+        {shareTarget && (() => {
+          const link = buildDeepLink(telegramBotUsername, shareTarget.parentPhone);
+          const text = `Assalomu alaykum! ${shareTarget.fullName} bo'yicha davomat va to'lov xabarlarini Telegram orqali olish uchun shu havolani bosing: ${link}`;
+          const phoneDigits = (shareTarget.parentPhone || '').replace(/D/g, '');
+
+          return (
+            <div className="space-y-4">
+              <div className="rounded-lg bg-gray-50 border border-gray-200 px-4 py-3">
+                <p className="font-medium text-gray-900">{shareTarget.parentName || "Ota-ona"}</p>
+                <p className="text-sm text-gray-500">{formatPhone(shareTarget.parentPhone)}</p>
+              </div>
+
+              {/* Havola ko'rinib turadi — nusxalash ishlamasa qo'lda belgilash mumkin */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Havola</label>
+                <input
+                  type="text"
+                  readOnly
+                  value={link}
+                  onFocus={(e) => e.target.select()}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-gray-50 font-mono"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const ok = await copyToClipboard(link);
+                    if (ok) {
+                      setCopied('share-link');
+                      setTimeout(() => setCopied(''), 2000);
+                      toast.success('Havola nusxalandi');
+                    } else {
+                      // Yolg'on muvaffaqiyat ko'rsatmaymiz — foydalanuvchi
+                      // yuqoridagi maydondan qo'lda belgilab olishi mumkin
+                      toast.info("Nusxalab bo'lmadi — havolani yuqoridan belgilab oling");
+                    }
+                  }}
+                  className="inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-medium border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  {copied === 'share-link'
+                    ? <><Check className="w-4 h-4 text-green-600" /> Nusxalandi</>
+                    : <><Copy className="w-4 h-4" /> Nusxalash</>}
+                </button>
+
+                <a
+                  href={`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-medium border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50"
+                >
+                  <MessageCircle className="w-4 h-4" /> Telegram
+                </a>
+
+                <a
+                  href={`sms:${phoneDigits ? '+' + phoneDigits : ''}?&body=${encodeURIComponent(text)}`}
+                  className="inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-medium border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  <Smartphone className="w-4 h-4" /> SMS
+                </a>
+              </div>
+
+              <p className="text-xs text-gray-500">
+                <strong>Telegram</strong> — Telegram ochilib, kimga yuborishni tanlaysiz.
+                <strong className="ml-1">SMS</strong> — telefonda SMS ilovasi tayyor matn bilan ochiladi (kompyuterda ishlamasligi mumkin).
+                Ota-ona havolani bosgach, Telegram avtomatik ulanadi.
+              </p>
+            </div>
+          );
+        })()}
       </Modal>
     </div>
   );

@@ -28,13 +28,6 @@ const TABS = {
     { to: '/grades',       icon: FileText,        label: 'Baholar' },
     { to: '/messages',     icon: MessageSquare,   label: 'Xabar' },
   ],
-  [ROLES.ADMIN]: [
-    { to: '/dashboard',    icon: LayoutDashboard, label: 'Asosiy' },
-    { to: '/students',     icon: Users,           label: "O'quvchi" },
-    { to: '/payments',     icon: CreditCard,      label: "To'lov" },
-    { to: '/leads',        icon: UserPlus,        label: 'Lidlar' },
-    { to: '/messages',     icon: MessageSquare,   label: 'Xabar' },
-  ],
   [ROLES.DIRECTOR]: [
     { to: '/dashboard',    icon: LayoutDashboard, label: 'Asosiy' },
     { to: '/students',     icon: Users,           label: "O'quvchi" },
@@ -44,10 +37,30 @@ const TABS = {
   ],
 };
 
+// Admin uchun tablar ruxsatga qarab tanlanadi. Ro'yxat 5 tadan uzun — birinchi
+// beshtasi olinadi, ya'ni to'liq huquqli adminda avvalgi 5 ta tab o'zgarishsiz
+// qoladi, cheklangan "yordamchi o'qituvchi"da esa ular o'rniga o'ziga tegishli
+// bo'lganlari (davomat, baholar) chiqadi.
+const ADMIN_TAB_POOL = [
+  { to: '/dashboard',  icon: LayoutDashboard, label: 'Asosiy',   module: null },
+  { to: '/students',   icon: Users,           label: "O'quvchi", module: 'students' },
+  { to: '/payments',   icon: CreditCard,      label: "To'lov",   module: 'payments' },
+  { to: '/leads',      icon: UserPlus,        label: 'Lidlar',   module: 'leads' },
+  { to: '/messages',   icon: MessageSquare,   label: 'Xabar',    module: 'messages' },
+  { to: '/attendance', icon: CalendarCheck,   label: 'Davomat',  module: 'attendance' },
+  { to: '/grades',     icon: FileText,        label: 'Baholar',  module: 'grades' },
+];
+
 const MobileNav = ({ unreadCount = 0 }) => {
-  const { role } = useAuth();
-  const tabs = TABS[role];
-  if (!tabs) return null;
+  const { role, userData } = useAuth();
+
+  let tabs = TABS[role];
+  if (role === ROLES.ADMIN) {
+    const perms = userData?.permissions; // undefined = cheklov yo'q (eski admin)
+    const ok = (m) => m === null || !Array.isArray(perms) || perms.includes(m);
+    tabs = ADMIN_TAB_POOL.filter(t => ok(t.module)).slice(0, 5);
+  }
+  if (!tabs || tabs.length === 0) return null;
 
   return (
     <>

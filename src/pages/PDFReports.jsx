@@ -13,7 +13,7 @@ import { ROLES } from '../utils/constants';
 import { formatDate, formatMoney, toISODateString } from '../utils/helpers';
 import { toast } from 'react-toastify';
 import jsPDF from 'jspdf';
-import 'jspdf-autotable';
+import autoTable from 'jspdf-autotable';
 
 const PDFReports = () => {
   const { userData, role } = useAuth();
@@ -30,6 +30,15 @@ const PDFReports = () => {
   });
 
   const isAdmin = role === ROLES.ADMIN || role === ROLES.DIRECTOR;
+
+  // To'lov ma'lumotlari faqat ADMIN roli uchun cheklanadi — direktor va
+  // o'qituvchi firestore.rules'dagi isStaffWithPermission() dan baribir o'tadi.
+  // Cheklangan admin ("yordamchi o'qituvchi") uchun to'lov so'rovi rad etiladi,
+  // shuning uchun so'rov umuman yuborilmaydi va hisobotdan moliyaviy qatorlar
+  // tushirib qoldiriladi.
+  const canSeeFinance = role !== ROLES.ADMIN
+    || !Array.isArray(userData?.permissions)
+    || userData.permissions.includes('payments');
 
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { if (selectedGroup) fetchStudents(); }, [selectedGroup]);
@@ -63,10 +72,12 @@ const PDFReports = () => {
         return;
       }
 
-      const [grades, attendance, payments, homework, quizResults] = await Promise.all([
+      const [grades, attendance, myPayments, homework, quizResults] = await Promise.all([
         gradesAPI.getByGroup(selectedGroup),
         attendanceAPI.getByGroup(selectedGroup),
-        paymentsAPI.getAll(),
+        // Butun markazning to'lov tarixini emas — faqat shu bitta o'quvchinikini
+        // (indexed query, studentId bo'yicha) — natija bir xil, o'qish soni ozroq
+        canSeeFinance ? paymentsAPI.getByStudent(selectedStudent) : Promise.resolve([]),
         homeworkAPI.getByGroup(selectedGroup),
         quizAPI.getByGroup(selectedGroup)
       ]);
@@ -74,7 +85,6 @@ const PDFReports = () => {
       // O'quvchining ma'lumotlarini filter
       const myGrades = grades.filter(g => g.studentId === selectedStudent);
       const myAttendance = attendance.filter(a => a.studentId === selectedStudent);
-      const myPayments = payments.filter(p => p.studentId === selectedStudent);
       
       // Homework submissions
       const homeworkWithSubs = await Promise.all(
@@ -131,14 +141,16 @@ const PDFReports = () => {
       doc.text("Umumiy statistika", 14, 85);
       
       // Statistika jadval
-      doc.autoTable({
+      autoTable(doc, {
         startY: 90,
         head: [['Ko\'rsatkich', 'Qiymat']],
         body: [
           ["O'rtacha baho", `${gradeAvg}%`],
           ['Davomat', `${attendancePercent}% (${attendancePresent}/${attendanceTotal})`],
-          ["To'langan", formatMoney(totalPaid)],
-          ['Qarzdorlik', formatMoney(totalDebt)],
+          ...(canSeeFinance ? [
+            ["To'langan", formatMoney(totalPaid)],
+            ['Qarzdorlik', formatMoney(totalDebt)],
+          ] : []),
           ['Uy vazifalari', `${homeworkWithSubs.filter(h => h.submission).length}/${homeworkWithSubs.length}`],
           ['Testlar', `${quizWithResults.filter(q => q.result).length}/${quizWithResults.length}`],
         ],
@@ -152,7 +164,7 @@ const PDFReports = () => {
         doc.setFontSize(14);
         doc.text("Baholar", 14, 20);
 
-        doc.autoTable({
+        autoTable(doc, {
           startY: 25,
           head: [['Sana', 'Mavzu', 'Baho', 'Max', 'Foiz']],
           body: myGrades.slice(-20).map(g => [
@@ -177,7 +189,7 @@ const PDFReports = () => {
 
         const statusMap = { present: 'Keldi', absent: 'Kelmadi', late: 'Kechikdi', excused: 'Sababli' };
         
-        doc.autoTable({
+        autoTable(doc, {
           startY: currentY > 200 ? 25 : currentY + 20,
           head: [['Sana', 'Holat']],
           body: myAttendance.slice(-30).map(a => [
@@ -250,7 +262,7 @@ const PDFReports = () => {
       });
 
       // Jadval
-      doc.autoTable({
+      autoTable(doc, {
         startY: 50,
         head: [["O'quvchi", "O'rtacha baho", 'Davomat', 'Baholar soni']],
         body: studentStats
@@ -290,10 +302,18 @@ const PDFReports = () => {
   };
 
   const generateFinancialReport = async () => {
+    if (!canSeeFinance) {
+      toast.error("Sizda moliyaviy hisobot uchun ruxsat yo'q");
+      return;
+    }
     setGenerating(true);
     try {
+      // Faqat tanlangan davrdan (dateRange.start) beri to'lovlarni yuklaymiz —
+      // admin allaqachon davrni tanlagan, undan oldingi tarixni o'qishning
+      // hojati yo'q. Yuqori chegara (dateRange.end) baribir pastda, oldingidek,
+      // client tomonda aniq filtrlanadi — natija bir xil bo'ladi.
       const [payments, studentsData, groupsData] = await Promise.all([
-        paymentsAPI.getAll(),
+        paymentsAPI.getSince(dateRange.start),
         studentsAPI.getAll(),
         groupsAPI.getAll()
       ]);
@@ -325,7 +345,7 @@ const PDFReports = () => {
       doc.setTextColor(0);
       doc.text("Umumiy ko'rsatkichlar", 14, 45);
 
-      doc.autoTable({
+      autoTable(doc, {
         startY: 50,
         head: [['Ko\'rsatkich', 'Qiymat']],
         body: [
@@ -361,7 +381,7 @@ const PDFReports = () => {
       doc.setFontSize(14);
       doc.text("Guruhlar bo'yicha", 14, 20);
 
-      doc.autoTable({
+      autoTable(doc, {
         startY: 25,
         head: [['Guruh', "O'quvchilar", "To'langan", 'Qarzdorlik']],
         body: groupPayments
@@ -388,7 +408,7 @@ const PDFReports = () => {
         doc.setFontSize(14);
         doc.text("So'nggi to'lovlar", 14, currentY);
 
-        doc.autoTable({
+        autoTable(doc, {
           startY: currentY + 5,
           head: [['Sana', "O'quvchi", 'Summa', 'Oy']],
           body: recentPayments.map(p => [
@@ -485,11 +505,11 @@ const PDFReports = () => {
           </div>
         </Card>
 
-        {isAdmin && (
-          <Card 
+        {isAdmin && canSeeFinance && (
+          <Card
             padding="p-6"
             className={`cursor-pointer transition ${
-              reportType === 'financial' 
+              reportType === 'financial'
                 ? 'ring-2 ring-purple-500 bg-purple-50' 
                 : 'hover:bg-gray-50'
             }`}

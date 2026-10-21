@@ -1,25 +1,69 @@
 import { useState, useEffect } from 'react';
 import { Plus, FileText, Star, Trash2 } from 'lucide-react';
 import { Card, Button, Input, Select, Avatar, Table, Modal, Loading, EmptyState } from '../components/common';
-import { gradesAPI, groupsAPI, studentsAPI, teachersAPI, attendanceAPI } from '../services/api';
+import { gradesAPI, studentsAPI, attendanceAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { useRoleScopedGroups } from '../hooks/useRoleScopedGroups';
 import { ROLES } from '../utils/constants';
+import {
+  GRADE_LEVEL_LIST,
+  GRADE_LEVEL_META,
+  STUCK_THRESHOLD,
+  getCourseOptions,
+  getLessonOptions,
+  resolveTopicLabel,
+} from '../utils/curriculum';
 import { formatDate } from '../utils/helpers';
 import { toast } from 'react-toastify';
 import { captureError } from '../services/sentry';
 
+// Oxirgi tanlangan kursni guruh bo'yicha eslab qolamiz — o'qituvchi har baho
+// qo'yganda kursni qayta tanlamasin.
+const COURSE_MEMORY_KEY = 'grades:lastCourseByGroup';
+
+const readCourseMemory = () => {
+  try {
+    return JSON.parse(localStorage.getItem(COURSE_MEMORY_KEY) || '{}');
+  } catch {
+    return {};
+  }
+};
+
+const rememberCourse = (groupId, courseId) => {
+  if (!groupId || !courseId) return;
+  try {
+    const memory = readCourseMemory();
+    memory[groupId] = courseId;
+    localStorage.setItem(COURSE_MEMORY_KEY, JSON.stringify(memory));
+  } catch {
+    /* localStorage bloklangan bo'lsa — jim o'tamiz */
+  }
+};
+
+const emptyForm = (courseId = '') => ({
+  studentId: '',
+  type: 'qa',
+  courseId,
+  lessonId: '',
+  topic: '',
+  useFreeTopic: false,
+  level: '',
+  grade: '',
+  maxGrade: '5',
+  note: '',
+  date: new Date().toISOString().split('T')[0],
+});
+
 const Grades = () => {
   const { userData, role } = useAuth();
+  const { groups, studentData, loading, error: groupsError } = useRoleScopedGroups(role, userData);
   const [grades, setGrades] = useState([]);
   const [allGroupGrades, setAllGroupGrades] = useState([]); // Reyting uchun barcha baholar
-  const [groups, setGroups] = useState([]);
   const [students, setStudents] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [selectedGroup, setSelectedGroup] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
-  const [formData, setFormData] = useState({ studentId: '', type: 'qa', topic: '', grade: '', maxGrade: '5', note: '', date: new Date().toISOString().split('T')[0] });
+  const [formData, setFormData] = useState(emptyForm());
   const [formLoading, setFormLoading] = useState(false);
-  const [studentData, setStudentData] = useState(null);
   const [filterDate, setFilterDate] = useState(''); // Sana bo'yicha filter
   const [fetchedAttendance, setFetchedAttendance] = useState(null); // null | 'present' | 'absent' | 'not_found'
   const [attendanceFetching, setAttendanceFetching] = useState(false);
@@ -37,8 +81,27 @@ const Grades = () => {
     return gradeDate === today; // Faqat bugun qo'yilgan bahoni o'chirish mumkin
   };
 
-  useEffect(() => { fetchGroups(); }, []);
+  // Guruhlar useRoleScopedGroups orqali yuklanadi; bu yerda faqat shu sahifaga
+  // xos xatti-harakatlar: bitta guruh bo'lsa avtomatik tanlash va xato bo'lsa toast
+  useEffect(() => {
+    if (groups.length === 1) setSelectedGroup(groups[0].id);
+  }, [groups]);
+
+  useEffect(() => {
+    if (groupsError) {
+      captureError(groupsError, { context: 'fetchGroups' });
+      toast.error("Guruhlar yuklanmadi. Sahifani yangilang.", { toastId: 'grades-load-error' });
+    }
+  }, [groupsError]);
+
   useEffect(() => { if (selectedGroup) fetchGradesAndStudents(); }, [selectedGroup]);
+
+  // Guruh almashsa — o'sha guruh uchun oxirgi ishlatilgan kursni tiklaymiz
+  useEffect(() => {
+    if (!selectedGroup) return;
+    const remembered = readCourseMemory()[selectedGroup] || '';
+    setFormData(prev => ({ ...prev, courseId: remembered, lessonId: '' }));
+  }, [selectedGroup]);
 
   // Davomat turida o'quvchi + sana tanlanganda avtomatik davomat holati olinadi
   useEffect(() => {
@@ -69,80 +132,6 @@ const Grades = () => {
     fetchAtt();
     return () => { cancelled = true; };
   }, [formData.type, formData.studentId, formData.date, selectedGroup]);
-
-  const fetchGroups = async () => {
-    try {
-      let groupsData = [];
-      
-      if (isTeacher) {
-        // O'qituvchini teachers kolleksiyasidan topish
-        const allTeachers = await teachersAPI.getAll();
-        const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
-        
-        const teacher = allTeachers.find(t => 
-          t.id === userData?.id || 
-          t.email === userData?.email ||
-          t.phone === userData?.phone ||
-          normalizePhone(t.phone) === normalizePhone(userData?.phone)
-        );
-        
-        
-        // Guruhlarni topish - barcha guruhlardan filter
-        const allGroups = await groupsAPI.getAll();
-        
-        if (teacher) {
-          groupsData = allGroups.filter(g => g.teacherId === teacher.id);
-        }
-        
-        // Users ID bilan ham
-        const groups2 = allGroups.filter(g => g.teacherId === userData?.id);
-        
-        // Birlashtirish
-        groupsData = [...groupsData, ...groups2].filter((g, index, self) => 
-          index === self.findIndex(t => t.id === g.id)
-        );
-        
-      } else if (isStudentOrParent) {
-        // O'quvchi/Ota-ona faqat o'z guruhini ko'radi
-        const allStudents = await studentsAPI.getAll();
-        let student;
-        
-        if (role === ROLES.PARENT) {
-          student = allStudents.find(s => 
-            s.parentPhone === userData?.phone || 
-            s.parentPhone?.replace(/\D/g, '') === userData?.phone?.replace(/\D/g, '')
-          );
-        } else {
-          student = allStudents.find(s => 
-            s.email === userData?.email || 
-            s.phone === userData?.phone ||
-            s.phone?.replace(/\D/g, '') === userData?.phone?.replace(/\D/g, '')
-          );
-        }
-        
-        if (student) {
-          setStudentData(student);
-          const allGroups = await groupsAPI.getAll();
-          groupsData = allGroups.filter(g => 
-            g.id === student.groupId || 
-            g.studentIds?.includes(student.id)
-          );
-        }
-      } else {
-        groupsData = await groupsAPI.getAll();
-      }
-      
-      setGroups(groupsData);
-      
-      // Agar faqat bitta guruh bo'lsa, avtomatik tanlash
-      if (groupsData.length === 1) {
-        setSelectedGroup(groupsData[0].id);
-      }
-    } catch (err) {
-      captureError(err, { context: 'fetchGroups' });
-      toast.error("Guruhlar yuklanmadi. Sahifani yangilang.", { toastId: 'grades-load-error' });
-    } finally { setLoading(false); }
-  };
 
   const fetchGradesAndStudents = async () => {
     try {
@@ -175,6 +164,8 @@ const Grades = () => {
       ...prev,
       type,
       grade: '',
+      // Davomatda daraja tushunchasi yo'q
+      level: type === 'attendance' ? '' : prev.level,
       maxGrade: type === 'qa' ? '5' : type === 'attendance' ? '1' : '10',
     }));
   };
@@ -184,11 +175,23 @@ const Grades = () => {
     setFormLoading(true);
     try {
       const student = students.find(s => s.id === formData.studentId);
+      const useLesson = !formData.useFreeTopic && !!formData.lessonId;
+
+      // topic — inson o'qiy oladigan nom (eski baholar bilan bir xil ko'rinsin
+      // va PDF/Telegram hisobotlarida o'zgarish talab qilinmasin).
+      // lessonId — statistika uchun barqaror kalit.
+      const topicLabel = useLesson
+        ? resolveTopicLabel({ lessonId: formData.lessonId })
+        : formData.topic;
+
       const newGrade = await gradesAPI.create({
         studentId: formData.studentId,
         studentName: student?.fullName || '',
         type: formData.type,
-        topic: formData.topic,
+        topic: topicLabel,
+        lessonId: useLesson ? formData.lessonId : null,
+        courseId: useLesson ? formData.courseId : null,
+        level: formData.type === 'attendance' ? null : (formData.level || null),
         note: formData.note,
         groupId: selectedGroup,
         grade: Number(formData.grade),
@@ -197,9 +200,13 @@ const Grades = () => {
         teacherId: userData?.id,
         teacherName: userData?.fullName
       });
+
+      if (useLesson) rememberCourse(selectedGroup, formData.courseId);
+
       setGrades([newGrade, ...grades]);
+      setAllGroupGrades(prev => [newGrade, ...prev]);
       setShowAddModal(false);
-      setFormData({ studentId: '', type: 'qa', topic: '', grade: '', maxGrade: '5', note: '', date: new Date().toISOString().split('T')[0] });
+      setFormData(emptyForm(formData.courseId));
       toast.success("Baho qo'shildi");
     } catch (err) { toast.error("Xatolik yuz berdi"); }
     finally { setFormLoading(false); }
@@ -236,6 +243,19 @@ const Grades = () => {
     return <span className={`px-3 py-1 rounded-lg font-bold ${color}`}>🔧 {grade.grade}/{grade.maxGrade}</span>;
   };
 
+  const getLevelBadge = (level) => {
+    const meta = GRADE_LEVEL_META[level];
+    if (!meta) return null;
+    return (
+      <span
+        className={`px-2 py-0.5 rounded-md text-xs font-semibold ${meta.badgeClass}`}
+        title={meta.description}
+      >
+        {meta.emoji} {meta.label}
+      </span>
+    );
+  };
+
   // O'quvchi statistikasi — to'plangan ball (o'rtacha emas)
   const getStudentStats = () => {
     const stats = {};
@@ -256,9 +276,67 @@ const Grades = () => {
       const legacySum = sg.filter(g => !g.type && g.maxGrade > 10)
                           .reduce((sum, g) => sum + Math.round((g.grade / g.maxGrade) * 10), 0);
       const totalPoints = Math.round((qaSum + practicalSum + legacySum) * 10) / 10;
-      stats[s.id] = { totalPoints, qaSum: Math.round(qaSum * 10) / 10, qaMaxTotal, practicalSum, attendanceCount, attendanceTotal, count: sg.length };
+
+      // ── Daraja tahlili ────────────────────────────────────────
+      // "Bronze tuzog'i": o'quvchi ketma-ket faqat Bronze qilsa, u kursni
+      // tugatadi-yu, hech narsa o'rganmaydi. Shuni ko'rinadigan qilamiz.
+      const levelled = sg
+        .filter(g => g.level && GRADE_LEVEL_META[g.level])
+        .sort((a, b) => {
+          const da = a.date || formatDate(a.createdAt) || '';
+          const db = b.date || formatDate(b.createdAt) || '';
+          return db.localeCompare(da); // eng yangisi birinchi
+        });
+
+      const levelCounts = { bronze: 0, silver: 0, gold: 0 };
+      levelled.forEach(g => { levelCounts[g.level] += 1; });
+
+      // Eng oxirgi ketma-ket bir xil darajalar soni
+      let streakLevel = levelled[0]?.level || null;
+      let streak = 0;
+      for (const g of levelled) {
+        if (g.level !== streakLevel) break;
+        streak += 1;
+      }
+      const stuckOnBronze = streakLevel === 'bronze' && streak >= STUCK_THRESHOLD;
+
+      stats[s.id] = {
+        totalPoints,
+        qaSum: Math.round(qaSum * 10) / 10,
+        qaMaxTotal,
+        practicalSum,
+        attendanceCount,
+        attendanceTotal,
+        count: sg.length,
+        levelCounts,
+        levelledTotal: levelled.length,
+        lastLevel: streakLevel,
+        streak,
+        stuckOnBronze,
+      };
     });
     return stats;
+  };
+
+  // Guruh kesimida: qaysi darsda ko'pchilik Bronze'da qolgan?
+  const getWeakLessons = () => {
+    const byLesson = {};
+    (allGroupGrades.length > 0 ? allGroupGrades : grades).forEach(g => {
+      if (!g.lessonId || !g.level) return;
+      if (!byLesson[g.lessonId]) {
+        byLesson[g.lessonId] = { lessonId: g.lessonId, label: resolveTopicLabel(g), bronze: 0, silver: 0, gold: 0, total: 0 };
+      }
+      const entry = byLesson[g.lessonId];
+      if (entry[g.level] !== undefined) entry[g.level] += 1;
+      entry.total += 1;
+    });
+
+    return Object.values(byLesson)
+      .filter(l => l.total >= 3) // kam ma'lumotdan xulosa chiqarmaymiz
+      .map(l => ({ ...l, bronzeRatio: l.bronze / l.total }))
+      .filter(l => l.bronzeRatio >= 0.5)
+      .sort((a, b) => b.bronzeRatio - a.bronzeRatio)
+      .slice(0, 3);
   };
 
   if (loading) return <Loading fullScreen text="Yuklanmoqda..." />;
@@ -277,7 +355,8 @@ const Grades = () => {
   }
 
   const studentStats = getStudentStats();
-  
+  const weakLessons = canEdit ? getWeakLessons() : [];
+
   // Sana bo'yicha filter
   const filteredGrades = filterDate 
     ? grades.filter(g => (g.date || formatDate(g.createdAt)) === filterDate)
@@ -350,14 +429,22 @@ const Grades = () => {
                           </div>
                         </Table.Cell>
                         <Table.Cell>
-                          <div>
-                            <span className="text-xs text-gray-400 mr-1">
-                              {grade.type === 'practical' ? '🔧' : '❓'}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-xs text-gray-400">
+                              {grade.type === 'practical' ? '🔧' : grade.type === 'attendance' ? '📅' : '❓'}
                             </span>
-                            {grade.topic}
+                            <span>{resolveTopicLabel(grade)}</span>
+                            {!grade.lessonId && grade.type !== 'attendance' && (
+                              <span className="text-xs text-gray-300" title="Dars rejasiga bog'lanmagan">⚠️</span>
+                            )}
                           </div>
                         </Table.Cell>
-                        <Table.Cell>{getGradeBadge(grade)}</Table.Cell>
+                        <Table.Cell>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {getGradeBadge(grade)}
+                            {getLevelBadge(grade.level)}
+                          </div>
+                        </Table.Cell>
                         <Table.Cell>{grade.date || formatDate(grade.createdAt)}</Table.Cell>
                         {canEdit && (
                           <Table.Cell>
@@ -387,6 +474,27 @@ const Grades = () => {
           </div>
 
           {/* O'quvchilar statistikasi */}
+          <div className="space-y-6">
+          {canEdit && weakLessons.length > 0 && (
+            <Card>
+              <h3 className="font-semibold mb-1">⚠️ Diqqat talab qiladigan darslar</h3>
+              <p className="text-xs text-gray-400 mb-3">
+                Yarmidan ko'pi Bronze darajada qolgan darslar — bu yerda tushuntirish qayta ko'rib chiqilishi kerak
+              </p>
+              <div className="space-y-2">
+                {weakLessons.map(l => (
+                  <div key={l.lessonId} className="p-2 rounded-lg bg-orange-50 border border-orange-200">
+                    <p className="text-sm font-medium text-gray-800">{l.label}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {l.total} bahodan {l.bronze} tasi 🥉 Bronze
+                      &nbsp;·&nbsp; 🥈{l.silver} &nbsp;·&nbsp; 🥇{l.gold}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
           <Card>
             <h3 className="font-semibold mb-1">Reyting (ball)</h3>
             <p className="text-xs text-gray-400 mb-3">❓savol-javob: to'g'ri/jami &nbsp;|&nbsp; 🔧 amaliy 0–10 &nbsp;|&nbsp; 📅 davomat</p>
@@ -406,7 +514,17 @@ const Grades = () => {
                       </span>
                       <Avatar name={student.fullName} size="sm" />
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium text-sm truncate">{student.fullName}</p>
+                        <p className="font-medium text-sm truncate flex items-center gap-1">
+                          {student.fullName}
+                          {student.stats?.stuckOnBronze && (
+                            <span
+                              title={`${student.stats.streak} ta baho ketma-ket Bronze — qiyinroq topshiriqqa o'tolmayapti`}
+                              className="text-orange-500"
+                            >
+                              ⚠️
+                            </span>
+                          )}
+                        </p>
                         <p className="text-xs text-gray-400">
                           ❓{student.stats?.qaSum ?? 0}/{student.stats?.qaMaxTotal || 0}
                           &nbsp;·&nbsp;
@@ -415,6 +533,13 @@ const Grades = () => {
                             <>&nbsp;·&nbsp;📅{student.stats.attendanceCount}/{student.stats.attendanceTotal}</>
                           )}
                         </p>
+                        {(student.stats?.levelledTotal || 0) > 0 && (
+                          <p className="text-xs text-gray-400 mt-0.5">
+                            🥉{student.stats.levelCounts.bronze}
+                            &nbsp;·&nbsp;🥈{student.stats.levelCounts.silver}
+                            &nbsp;·&nbsp;🥇{student.stats.levelCounts.gold}
+                          </p>
+                        )}
                       </div>
                       <span className="text-sm font-bold text-primary-600">
                         {student.stats?.totalPoints ?? '—'} b
@@ -426,6 +551,7 @@ const Grades = () => {
               <p className="text-gray-500 text-sm">Bu guruhda o'quvchilar yo'q</p>
             )}
           </Card>
+          </div>
         </div>
       )}
 
@@ -486,22 +612,95 @@ const Grades = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <Input
-              label="Sana"
-              type="date"
-              value={formData.date}
-              onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-              required
-            />
-            <Input
-              label="Mavzu / Tavsif"
-              value={formData.topic}
-              onChange={(e) => setFormData({ ...formData, topic: e.target.value })}
-              placeholder={formData.type === 'qa' ? '5-dars savollari' : formData.type === 'attendance' ? 'Dars nomi yoki sana' : 'Loyiha topshirig\'i'}
-              required
-            />
+          <Input
+            label="Sana"
+            type="date"
+            value={formData.date}
+            onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+            required
+          />
+
+          {/* ── Mavzu: dars rejasidan tanlash ──────────────────────────
+              Erkin matn o'rniga dars tanlanadi. Shunda "qaysi darsda
+              qoqilyapmiz?" degan savolga statistika javob bera oladi. */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="block text-sm font-medium text-gray-700">Mavzu</label>
+              <button
+                type="button"
+                onClick={() => setFormData({ ...formData, useFreeTopic: !formData.useFreeTopic })}
+                className="text-xs text-primary-600 hover:underline"
+              >
+                {formData.useFreeTopic ? "Dars rejasidan tanlash" : "Boshqa mavzu yozish"}
+              </button>
+            </div>
+
+            {formData.useFreeTopic ? (
+              <Input
+                value={formData.topic}
+                onChange={(e) => setFormData({ ...formData, topic: e.target.value })}
+                placeholder="Reja tashqarisidagi mavzu"
+                required
+              />
+            ) : (
+              <div className="space-y-2">
+                <Select
+                  value={formData.courseId}
+                  onChange={(e) => setFormData({ ...formData, courseId: e.target.value, lessonId: '' })}
+                  options={getCourseOptions()}
+                  placeholder="Kursni tanlang"
+                  required
+                />
+                <Select
+                  value={formData.lessonId}
+                  onChange={(e) => setFormData({ ...formData, lessonId: e.target.value })}
+                  options={getLessonOptions(formData.courseId)}
+                  placeholder={formData.courseId ? "Darsni tanlang" : "Avval kursni tanlang"}
+                  disabled={!formData.courseId}
+                  required
+                />
+              </div>
+            )}
           </div>
+
+          {/* ── Topshiriq darajasi ─────────────────────────────────────
+              Notion'dagi Bronze/Silver/Gold tizimi. Davomatga taalluqli emas. */}
+          {formData.type !== 'attendance' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Topshiriq darajasi
+                {formData.type === 'practical'
+                  ? <span className="text-red-500"> *</span>
+                  : <span className="text-gray-400 font-normal"> (ixtiyoriy)</span>}
+              </label>
+              <div className="flex gap-2">
+                {GRADE_LEVEL_LIST.map(level => {
+                  const meta = GRADE_LEVEL_META[level];
+                  const isActive = formData.level === level;
+                  return (
+                    <button
+                      key={level}
+                      type="button"
+                      title={meta.description}
+                      onClick={() => setFormData({ ...formData, level: isActive ? '' : level })}
+                      className={`flex-1 py-2 px-2 rounded-lg border-2 font-medium transition text-sm ${
+                        isActive
+                          ? meta.activeClass
+                          : `bg-white text-gray-700 border-gray-300 ${meta.hoverClass}`
+                      }`}
+                    >
+                      {meta.emoji} {meta.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {formData.type === 'practical' && !formData.level && (
+                <p className="text-xs text-gray-400 mt-1">
+                  O'quvchi qaysi darajadagi topshiriqni bajardi?
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Baho kiritish */}
           {formData.type === 'qa' ? (
@@ -618,7 +817,14 @@ const Grades = () => {
             <Button
               type="submit"
               loading={formLoading}
-              disabled={formData.grade === '' || (formData.type === 'attendance' && fetchedAttendance === 'not_found')}
+              disabled={
+                formData.grade === ''
+                || (formData.type === 'attendance' && fetchedAttendance === 'not_found')
+                // Mavzu: yo dars tanlangan, yo erkin matn yozilgan bo'lishi shart
+                || (formData.useFreeTopic ? !formData.topic.trim() : !formData.lessonId)
+                // Amaliy ishda daraja majburiy — Bronze tuzog'ini ko'rish uchun
+                || (formData.type === 'practical' && !formData.level)
+              }
             >
               Saqlash
             </Button>

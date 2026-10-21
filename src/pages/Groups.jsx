@@ -5,8 +5,10 @@ import { groupsAPI, teachersAPI, studentsAPI, gradesAPI, attendanceAPI, schedule
 import { useAuth } from '../contexts/AuthContext';
 import { activityLogAPI, LOG_ACTIONS } from '../services/activityLog';
 import { ROLES } from '../utils/constants';
+import { getCourseOptions } from '../utils/curriculum';
 import { formatMoney } from '../utils/helpers';
 import { checkLimit, SUBSCRIPTION_PLANS } from '../utils/subscriptions';
+import { toast } from 'react-toastify';
 
 const Groups = () => {
   const { userData, role, centerData } = useAuth();
@@ -36,9 +38,11 @@ const Groups = () => {
     scheduleDays: [], // Dars kunlari array
     startTime: '09:00',
     endTime: '10:30',
-    price: '', 
+    price: '',
     maxStudents: '',
-    room: '' // Xona
+    courseDurationMonths: '',
+    room: '', // Xona
+    courseId: '' // Qaysi kurs dasturi bo'yicha o'qiydi (curriculum.js)
   });
   const [formLoading, setFormLoading] = useState(false);
 
@@ -132,9 +136,11 @@ const Groups = () => {
     scheduleDays: [], 
     startTime: '09:00', 
     endTime: '10:30', 
-    price: '', 
+    price: '',
     maxStudents: '',
-    room: ''
+    courseDurationMonths: '',
+    room: '',
+    courseId: ''
   });
 
   // Guruh tafsilotlarini ko'rish
@@ -217,27 +223,39 @@ const Groups = () => {
         },
         price: Number(formData.price),
         maxStudents: Number(formData.maxStudents),
+        courseDurationMonths: formData.courseDurationMonths ? parseInt(formData.courseDurationMonths, 10) : null,
         room: formData.room,
+        courseId: formData.courseId || null,
         studentsCount: 0,
         status: 'active'
       });
       
-      // Jadvalga avtomatik qo'shish (har bir kun uchun)
-      for (const dayId of formData.scheduleDays) {
-        await scheduleAPI.create({
-          groupId: newGroup.id,
-          groupName: formData.name,
-          teacherId: formData.teacherId,
-          teacherName: teacher?.fullName || '',
-          dayOfWeek: dayId,
-          dayName: WEEKDAYS.find(w => w.id === dayId)?.full,
-          startTime: formData.startTime,
-          endTime: formData.endTime,
-          room: formData.room || '',
-          status: 'active'
-        });
+      // Jadvalga avtomatik qo'shish (har bir kun uchun).
+      // MUHIM: bu qadam guruh yaratilgandan KEYIN bajariladi, shuning uchun u
+      // yiqilsa guruh baribir yaratilgan bo'lib qoladi. Jadval yozuvi — guruh
+      // hujjatidagi `schedule` maydonining nusxasi (Jadval sahifasi uchun),
+      // ya'ni u yozilmasa ma'lumot yo'qolmaydi. Masalan 'schedule' moduli
+      // ruxsati yo'q admin uchun bu so'rov rad etiladi — shu sabab xato
+      // guruh yaratishni buzmasligi kerak (tahrirlash oqimida ham shunday).
+      try {
+        for (const dayId of formData.scheduleDays) {
+          await scheduleAPI.create({
+            groupId: newGroup.id,
+            groupName: formData.name,
+            teacherId: formData.teacherId,
+            teacherName: teacher?.fullName || '',
+            dayOfWeek: dayId,
+            dayName: WEEKDAYS.find(w => w.id === dayId)?.full,
+            startTime: formData.startTime,
+            endTime: formData.endTime,
+            room: formData.room || '',
+            status: 'active'
+          });
+        }
+      } catch (scheduleErr) {
+        console.warn('Jadval yozuvi yaratilmadi (guruh baribir yaratildi):', scheduleErr);
       }
-      
+
       setGroups([newGroup, ...groups]);
       setShowAddModal(false);
       resetForm();
@@ -281,9 +299,11 @@ const Groups = () => {
         },
         price: Number(formData.price),
         maxStudents: Number(formData.maxStudents),
-        room: formData.room
+        courseDurationMonths: formData.courseDurationMonths ? parseInt(formData.courseDurationMonths, 10) : null,
+        room: formData.room,
+        courseId: formData.courseId || null
       });
-      
+
       // Eski jadval yozuvlarini o'chirish va yangilarini qo'shish
       try {
         const existingSchedule = await scheduleAPI.getByGroup(selectedGroup.id);
@@ -307,8 +327,9 @@ const Groups = () => {
           });
         }
       } catch (scheduleErr) {
+        console.warn('Jadval yozuvi yangilanmadi (guruh baribir saqlandi):', scheduleErr);
       }
-      
+
       setGroups(groups.map(g => g.id === selectedGroup.id ? {
         ...g,
         name: formData.name,
@@ -316,7 +337,8 @@ const Groups = () => {
         teacherName: teacher?.fullName || '',
         schedule: { days: daysText, time: timeText, scheduleDays: formData.scheduleDays },
         price: Number(formData.price),
-        maxStudents: Number(formData.maxStudents)
+        maxStudents: Number(formData.maxStudents),
+        courseDurationMonths: formData.courseDurationMonths ? parseInt(formData.courseDurationMonths, 10) : null
       } : g));
       activityLogAPI.log({
         action: LOG_ACTIONS.GROUP_UPDATED.key,
@@ -354,19 +376,36 @@ const Groups = () => {
   const handleGraduate = async () => {
     setFormLoading(true);
     try {
+      // TARTIB MUHIM: avval o'quvchilar, keyin guruh.
+      // Guruh oldin belgilansa va o'quvchilarni yangilash yiqilsa,
+      // guruh "bitirgan" bo'lib, ichidagi o'quvchilar faol qolib ketardi —
+      // aynan shunday nomuvofiqlik To'lovlar sahifasida ularni "Guruhsiz"
+      // qilib ko'rsatgan va qarzini noto'g'ri hisoblagan edi.
+      // Bu tartibda esa xato bo'lsa guruh o'zgarmay qoladi va qayta urinish mumkin.
+      const graduatedCount = await studentsAPI.graduateByGroup(selectedGroup.id, userData?.id);
+
       await groupsAPI.update(selectedGroup.id, {
         status: 'graduated',
         graduatedAt: new Date().toISOString()
       });
+
       setGroups(groups.map(g => g.id === selectedGroup.id
         ? { ...g, status: 'graduated', graduatedAt: new Date().toISOString() }
         : g
       ));
       setShowGraduateModal(false);
+
+      toast.success(
+        graduatedCount > 0
+          ? `Guruh bitirildi. ${graduatedCount} ta o'quvchi ham "bitirgan" deb belgilandi.`
+          : 'Guruh bitirilgan deb belgilandi.'
+      );
+
       // Switch to active filter so graduated group disappears from view
       if (filterStatus === 'active') setFilterStatus('active');
     } catch (err) {
-      alert("Bitirish amalga oshmadi: " + err.message);
+      console.error(err);
+      toast.error("Bitirish amalga oshmadi: " + err.message);
     } finally {
       setFormLoading(false);
     }
@@ -402,7 +441,9 @@ const Groups = () => {
       endTime: group.schedule?.endTime || endTime || '10:30',
       price: group.price?.toString() || '',
       maxStudents: group.maxStudents?.toString() || '',
-      room: group.room || group.schedule?.room || ''
+      courseDurationMonths: group.courseDurationMonths?.toString() || '',
+      room: group.room || group.schedule?.room || '',
+      courseId: group.courseId || ''
     });
     setShowEditModal(true);
   };
@@ -694,6 +735,8 @@ const Groups = () => {
         <form onSubmit={handleAdd} className="space-y-4">
           <Input label="Guruh nomi" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} placeholder="Ingliz tili - Beginner" required />
           <Select label="O'qituvchi" value={formData.teacherId} onChange={(e) => setFormData({ ...formData, teacherId: e.target.value })} options={teachers.map(t => ({ value: t.id, label: `${t.fullName} (${t.subject})` }))} required />
+          {/* Kurs dasturi — Materiallar sahifasida darslar shu bo'yicha chiqadi */}
+          <Select label="Kurs dasturi" value={formData.courseId} onChange={(e) => setFormData({ ...formData, courseId: e.target.value })} options={getCourseOptions()} placeholder="Tanlanmagan (ixtiyoriy)" />
           
           {/* Dars kunlari */}
           <div>
@@ -731,6 +774,18 @@ const Groups = () => {
             <Input label="Narxi (so'm)" type="number" value={formData.price} onChange={(e) => setFormData({ ...formData, price: e.target.value })} placeholder="850000" required />
             <Input label="Max o'quvchilar" type="number" value={formData.maxStudents} onChange={(e) => setFormData({ ...formData, maxStudents: e.target.value })} placeholder="15" required />
           </div>
+
+          {/* Kurs davomiyligi — shuncha oydan keyin bu guruh o'quvchilariga to'lov
+              hisoblanmaydi (o'quvchi kartasida alohida qiymat bo'lsa, u ustun) */}
+          <Input
+            label="Kurs davomiyligi (oy)"
+            type="number"
+            min="1"
+            value={formData.courseDurationMonths}
+            onChange={(e) => setFormData({ ...formData, courseDurationMonths: e.target.value })}
+            placeholder="Masalan: 2"
+            helperText="Bo'sh qoldirilsa — muddatsiz. Belgilansa, shuncha oydan keyin to'lov hisoblanmaydi."
+          />
           
           <div className="p-3 bg-blue-50 rounded-lg text-sm text-blue-700">
             <p>📅 Tanlangan kunlar avtomatik dars jadvaliga qo'shiladi</p>
@@ -748,6 +803,7 @@ const Groups = () => {
         <form onSubmit={handleEdit} className="space-y-4">
           <Input label="Guruh nomi" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} required />
           <Select label="O'qituvchi" value={formData.teacherId} onChange={(e) => setFormData({ ...formData, teacherId: e.target.value })} options={teachers.map(t => ({ value: t.id, label: t.fullName }))} />
+          <Select label="Kurs dasturi" value={formData.courseId} onChange={(e) => setFormData({ ...formData, courseId: e.target.value })} options={getCourseOptions()} placeholder="Tanlanmagan (ixtiyoriy)" />
           
           {/* Dars kunlari */}
           <div>
@@ -780,6 +836,18 @@ const Groups = () => {
             <Input label="Narxi" type="number" value={formData.price} onChange={(e) => setFormData({ ...formData, price: e.target.value })} />
             <Input label="Max o'quvchilar" type="number" value={formData.maxStudents} onChange={(e) => setFormData({ ...formData, maxStudents: e.target.value })} />
           </div>
+
+          {/* Kurs davomiyligi — shuncha oydan keyin bu guruh o'quvchilariga to'lov
+              hisoblanmaydi (o'quvchi kartasida alohida qiymat bo'lsa, u ustun) */}
+          <Input
+            label="Kurs davomiyligi (oy)"
+            type="number"
+            min="1"
+            value={formData.courseDurationMonths}
+            onChange={(e) => setFormData({ ...formData, courseDurationMonths: e.target.value })}
+            placeholder="Masalan: 2"
+            helperText="Bo'sh qoldirilsa — muddatsiz. Belgilansa, shuncha oydan keyin to'lov hisoblanmaydi."
+          />
           <div className="flex justify-end gap-2 pt-4 border-t">
             <Button type="button" variant="ghost" onClick={() => setShowEditModal(false)}>Bekor qilish</Button>
             <Button type="submit" loading={formLoading}>Saqlash</Button>
@@ -807,8 +875,22 @@ const Groups = () => {
             </div>
           </div>
           <p className="text-gray-600 text-sm">
-            Guruhni "Bitirgan" deb belgilaysizmi? Guruh faol ro'yxatdan o'chiriladi va arxivga o'tadi. Bu amalni qaytarib bo'lmaydi.
+            Guruhni "Bitirgan" deb belgilaysizmi? Guruh faol ro'yxatdan
+            o'chiriladi va arxivga o'tadi. Bu amalni qaytarib bo'lmaydi.
           </p>
+
+          {/* Direktor nechta o'quvchi ta'sirlanishini OLDIN bilishi kerak —
+              bu ommaviy amal va qaytarib bo'lmaydi */}
+          {selectedGroup?.realStudentsCount > 0 && (
+            <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+              <Users className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-amber-800">
+                Guruhdagi <strong>{selectedGroup.realStudentsCount} ta o'quvchi</strong> ham
+                &quot;bitirgan&quot; deb belgilanadi va To'lovlar ro'yxatidan chiqadi.
+              </p>
+            </div>
+          )}
+
           <div className="flex justify-end gap-2 pt-2 border-t">
             <Button variant="ghost" onClick={() => setShowGraduateModal(false)}>Bekor qilish</Button>
             <Button

@@ -75,3 +75,36 @@ export const PERMISSIONS = {
 export const hasPermission = (role, permission) => {
   return PERMISSIONS[permission]?.includes(role) || false;
 };
+
+// Admin uchun boshqariluvchi modullar
+export const ADMIN_MODULES = [
+  { id: 'students',        label: "O'quvchilar" },
+  { id: 'teachers',        label: "O'qituvchilar" },
+  { id: 'groups',          label: 'Guruhlar' },
+  { id: 'schedule',        label: 'Jadval' },
+  { id: 'leads',           label: 'Lidlar' },
+  { id: 'payments',        label: "To'lovlar" },
+  { id: 'expenses',        label: 'Xarajatlar' },
+  { id: 'attendance',      label: 'Davomat' },
+  { id: 'grades',          label: 'Baholar' },
+  { id: 'homework',        label: 'Uy vazifalari' },
+  { id: 'quizzes',         label: 'Testlar' },
+  { id: 'materials',       label: 'Materiallar' },
+  { id: 'leaderboard',     label: 'Reyting' },
+  { id: 'rewards',         label: 'Mukofotlar' },
+  { id: 'certificates',    label: 'Sertifikatlar' },
+  { id: 'chat',            label: 'Chat' },
+  { id: 'pdf-reports',     label: 'PDF hisobotlar' },
+  { id: 'teacher-ratings', label: "O'qituvchi reytingi" },
+  { id: 'messages',        label: 'Xabarlar' },
+  { id: 'reports',         label: 'Hisobotlar' },
+];
+
+// "Yordamchi o'qituvchi" — yakka o'qituvchi tarifidagi bitta cheklangan admin
+// uchun tayyor ruxsatlar to'plami. Uning vazifasi: o'quvchilarning aloqa
+// ma'lumotlarini ko'rish, davomat qilish, sinf va uy topshiriqlarini baholash.
+//
+// MUHIM: bu to'rtta modul firestore.rules'da HAQIQATAN tekshiriladi — 'homework'
+// bo'lmasa yordamchi uy vazifasini baholay OLMAYDI. Moliyaviy va boshqaruv
+// bo'limlari (to'lov, lid, xarajat, sozlama) ataylab kiritilmagan.
+export const HELPER_TEACHER_MODULES = ['students', 'attendance', 'grades', 'homework'];

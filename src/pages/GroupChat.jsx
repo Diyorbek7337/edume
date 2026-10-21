@@ -72,20 +72,9 @@ const GroupChat = () => {
         );
       } else if (isStudentOrParent) {
         const allStudents = await studentsAPI.getAll();
-        const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
         
-        let student;
-        if (role === ROLES.PARENT) {
-          student = allStudents.find(s => 
-            s.parentPhone === userData?.phone || 
-            normalizePhone(s.parentPhone) === normalizePhone(userData?.phone)
-          );
-        } else {
-          student = allStudents.find(s => 
-            s.email === userData?.email || 
-            normalizePhone(s.phone) === normalizePhone(userData?.phone)
-          );
-        }
+        // O'z yozuvi: o'quvchi — userId, ota-ona — childIds (studentsAPI to'liq faqat shularni qaytaradi)
+        let student = allStudents.find(s => s.isMine);
         
         if (student) {
           const allGroups = await groupsAPI.getAll();

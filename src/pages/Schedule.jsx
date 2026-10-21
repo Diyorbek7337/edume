@@ -71,23 +71,14 @@ const Schedule = () => {
       // O'quvchi/ota-ona uchun faqat o'z guruh darslarini ko'rsatish
       if (role === ROLES.STUDENT || role === ROLES.PARENT) {
         const students = await studentsAPI.getAll();
-        const normalizePhone = (p) => p?.replace(/\D/g, '') || '';
-        const userPhone = normalizePhone(userData?.phone);
-        const userEmail = userData?.email?.toLowerCase();
 
         let myStudent = null;
         if (role === ROLES.STUDENT) {
-          myStudent = students.find(s => {
-            const sp = normalizePhone(s.phone);
-            return s.email?.toLowerCase() === userEmail || s.phone === userData?.phone || sp === userPhone;
-          });
+          myStudent = students.find(s => s.isMine) || null; // o'z yozuvi (studentsAPI: userId)
         } else {
           // parent: find first child
           const childIds = userData?.childIds || (userData?.childId ? [userData.childId] : []);
-          const myChildren = students.filter(s => {
-            const pp = normalizePhone(s.parentPhone);
-            return s.parentPhone === userData?.phone || (userPhone && pp === userPhone) || childIds.includes(s.id);
-          });
+          const myChildren = students.filter(s => s.isMine || childIds.includes(s.id));
           myStudent = myChildren[0] || null;
         }
 

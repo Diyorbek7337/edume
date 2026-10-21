@@ -11,6 +11,8 @@
  * 6. From now on, Payments can call sendMessage(token, chatId, text) directly
  */
 
+import { formatMonthUz } from '../utils/helpers';
+
 const BASE = (token) => `https://api.telegram.org/bot${token}`;
 
 // ==================== CORE API CALLS ====================
@@ -49,8 +51,27 @@ export const sendTelegramMessage = async (token, chatId, text) => {
 };
 
 /**
+ * Webhookni o'chiradi. Telegram bitta bot uchun webhook va getUpdates'ni
+ * bir vaqtda ishlatishga ruxsat bermaydi ("Conflict" xatosi) — webhook
+ * boshqa joyda (masalan avvalgi sinovda) o'rnatilgan bo'lsa ham, bu chaqiruv
+ * xavfsiz (webhook yo'q bo'lsa ham ok:true qaytaradi).
+ */
+export const deleteWebhook = async (token) => {
+  const res = await fetch(`${BASE(token)}/deleteWebhook`);
+  const data = await res.json();
+  return data.ok === true;
+};
+
+/**
  * Fetch recent updates (messages sent to the bot).
  * Uses offset=0 to get all unconfirmed updates (up to 100).
+ *
+ * MUHIM: avtomatik deleteWebhook() chaqiruvi VAQTINCHA olib tashlandi.
+ * Aynan shu bot tokeniga tegishli boshqa (legacy, Telegraf asosidagi) Cloud
+ * Function webhook orqali ishlayotgani aniqlandi — u haligacha ishlab
+ * turganmi yoki yo'qmi tekshirilmaguncha, bu funksiya webhookni avtomatik
+ * uzmasligi kerak. Shu bois hozircha "Sinxronlash" Conflict xatosi bilan
+ * to'xtaydi — bu zararsiz holat, faqat funksiya ishlamaydi.
  */
 export const getUpdates = async (token) => {
   const res = await fetch(`${BASE(token)}/getUpdates?limit=100&timeout=0`);
@@ -111,16 +132,25 @@ export const buildDeepLink = (botUsername, phone) => {
 
 // ==================== MESSAGE TEMPLATES ====================
 
+const escapeHtml = (str) =>
+  String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
 /**
  * Build a payment reminder message in Uzbek.
  */
 export const buildPaymentReminderText = ({ studentName, debt, centerName, month }) => {
-  const monthStr = month || new Date().toLocaleDateString('uz-UZ', { month: 'long', year: 'numeric' });
+  // Intl'ga tayanmaymiz: uz-UZ lokali ba'zi brauzerlarda "2026 M09"
+  // qaytaradi va aynan shu ota-onaga Telegram orqali ketgan edi.
+  const monthStr = month || formatMonthUz(new Date());
   return (
     `💰 <b>To'lov eslatmasi</b>\n\n` +
-    `O'quv markaz: <b>${centerName || "O'quv markaz"}</b>\n` +
-    `O'quvchi: <b>${studentName}</b>\n` +
-    `Oy: <b>${monthStr}</b>\n` +
+    `O'quv markaz: <b>${escapeHtml(centerName) || "O'quv markaz"}</b>\n` +
+    `O'quvchi: <b>${escapeHtml(studentName)}</b>\n` +
+    `Oy: <b>${escapeHtml(monthStr)}</b>\n` +
     `Qarzdorlik: <b>${Number(debt).toLocaleString()} so'm</b>\n\n` +
     `Iltimos, to'lovni amalga oshiring. Savollar bo'lsa, biz bilan bog'laning.`
   );

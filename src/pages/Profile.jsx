@@ -3,6 +3,8 @@ import { Save, User, Phone, Mail, Lock, AlertCircle, MessageCircle, Copy, Check 
 import { Card, Button, Input, Avatar, Badge } from '../components/common';
 import { useAuth } from '../contexts/AuthContext';
 import { usersAPI } from '../services/api';
+import { copyToClipboard } from '../utils/helpers';
+import { toast } from 'react-toastify';
 import { ROLE_NAMES } from '../utils/constants';
 import { updatePassword, reauthenticateWithCredential, EmailAuthProvider } from 'firebase/auth';
 import { auth, db } from '../services/firebase';
@@ -99,8 +101,11 @@ const Profile = () => {
     setGeneratingCode(false);
   };
 
-  const copyCode = () => {
-    navigator.clipboard.writeText(`/connect ${telegramCode}`);
+  const copyCode = async () => {
+    if (!await copyToClipboard(`/connect ${telegramCode}`)) {
+      toast.info("Nusxalab bo'lmadi — kodni qo'lda belgilab oling");
+      return;
+    }
     setCodeCopied(true);
     setTimeout(() => setCodeCopied(false), 2000);
   };

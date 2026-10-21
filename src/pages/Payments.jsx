@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { validatePaymentForm, hasErrors } from '../utils/validation';
 import {
   Search, Plus, CreditCard, CheckCircle, Clock, AlertTriangle, Eye,
@@ -10,11 +10,16 @@ import { Card, Button, Input, Select, Badge, Avatar, Table, Modal, Loading } fro
 import { paymentsAPI, studentsAPI, groupsAPI, settingsAPI, messagesAPI, teachersAPI, usersAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../utils/constants';
-import { formatMoney, formatDate } from '../utils/helpers';
+import { formatMoney, formatDate, formatMonthUz } from '../utils/helpers';
 import { toast } from 'react-toastify';
 import { activityLogAPI, LOG_ACTIONS } from '../services/activityLog';
 import { sendTelegramMessage, buildPaymentReminderText } from '../services/telegram';
 import { getPendingReminders, sendAllReminders } from '../services/autoReminder';
+import { addOneMonth, formatPeriodDisplay, getStudentPeriods } from '../utils/billingPeriods';
+
+// Telefon raqamlarni +998/bo'sh joy/tire kabi format farqlaridan qat'i nazar
+// solishtirish uchun (src/hooks/useRoleScopedGroups.js dagi bilan bir xil)
+const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
 
 const Payments = () => {
   const { userData, role } = useAuth();
@@ -73,55 +78,12 @@ const Payments = () => {
   const isTeacher = role === ROLES.TEACHER;
   const isStudentOrParent = role === ROLES.STUDENT || role === ROLES.PARENT;
   const isMountedRef = useRef(true);
-
-  // ==================== 12-DARS BILLING HELPERS ====================
-  const MONTH_NAMES = ['Yan','Fev','Mar','Apr','May','Iyn','Iyl','Avg','Sen','Okt','Noy','Dek'];
-
-  // Berilgan sanaga bir kalendar oyi qo'shadi (31 Jan → 28/29 Feb kabi edge caselarni ham to'g'ri bajaradi)
-  const addOneMonth = (dateStr) => {
-    const [y, m, d] = dateStr.split('-').map(Number);
-    let newYear = y;
-    let newMonth = m + 1;
-    if (newMonth > 12) { newMonth = 1; newYear++; }
-    const maxDay = new Date(newYear, newMonth, 0).getDate(); // o'sha oyning oxirgi kuni
-    const newDay = Math.min(d, maxDay);
-    return `${newYear}-${String(newMonth).padStart(2, '0')}-${String(newDay).padStart(2, '0')}`;
-  };
-
-  // "17 May – 17 Iyn 2026" formatida davr ko'rinishi
-  const formatPeriodDisplay = (periodStart, periodEnd) => {
-    const [sy, sm, sd] = periodStart.split('-').map(Number);
-    const [ey, em, ed] = periodEnd.split('-').map(Number);
-    const start = `${sd} ${MONTH_NAMES[sm - 1]}`;
-    const end = `${ed} ${MONTH_NAMES[em - 1]} ${ey}`;
-    return `${start} – ${end}`;
-  };
-
-  // O'quvchining barcha oylik davrlarini qaytaradi (startDate dan joriy davrgacha)
-  // Har bir davr: startDate → xuddi shu sana keyingi oyda (30-kunlik interval)
-  const getStudentPeriods = (student) => {
-    if (!student?.startDate) return [];
-    const todayStr = new Date().toISOString().split('T')[0];
-    const periods = [];
-    let currentStart = student.startDate;
-
-    for (let i = 0; i < 60; i++) { // Max 60 davr (5 yil)
-      const periodEnd = addOneMonth(currentStart);
-      periods.push({
-        periodStart: currentStart,
-        periodEnd,
-        month: currentStart.substring(0, 7), // Eski bill bilan moslik uchun
-        periodDisplay: formatPeriodDisplay(currentStart, periodEnd),
-      });
-      if (periodEnd >= todayStr) break; // Joriy davrga yetdik
-      currentStart = periodEnd; // Keyingi davr shu davr tugagan sanadan boshlanadi
-    }
-    return periods;
-  };
+  const submittingRef = useRef(false); // handlePayment ikki marta ishlamasligi uchun
 
   // Bugunni o'z ichiga olgan davrni qaytaradi
   const getCurrentPeriod = (student) => {
-    const periods = getStudentPeriods(student);
+    // Guruh ham uzatiladi — kurs davomiyligi guruh darajasida belgilanishi mumkin
+    const periods = getStudentPeriods(student, groups.find(g => g.id === student?.groupId));
     return periods.length > 0 ? periods[periods.length - 1] : null;
   };
 
@@ -137,7 +99,15 @@ const Payments = () => {
       let groupsData = [];
       let paymentsData = [];
       let billsData = [];
-      
+
+      // monthly_bills uchun 15 oylik oyna — yil chegarasidan (dekabr→yanvar)
+      // o'tib ketgan qarzlar ham to'g'ri hisoblanishi uchun yetarli zaxira bilan.
+      // Bunsiz sahifa har ochilganda markazning BUTUN tarixiy hisob-kitob
+      // tarixini (yillar davomida minglab hujjat) yuklardi.
+      const billsSinceDate = new Date();
+      billsSinceDate.setMonth(billsSinceDate.getMonth() - 15);
+      const billsSinceMonth = `${billsSinceDate.getFullYear()}-${String(billsSinceDate.getMonth() + 1).padStart(2, '0')}`;
+
       const settingsData = await settingsAPI.get();
       setSettings(settingsData || {});
 
@@ -152,13 +122,15 @@ const Payments = () => {
         if (role === ROLES.STUDENT) {
           // O'quvchi - email orqali topish yoki userData.studentId
           if (userData?.email) {
-            student = allStudents.find(s => s.email === userData.email);
+            student = allStudents.find(s => s.isMine); // o'z yozuvi (studentsAPI: userId)
           }
           if (!student && userData?.studentId) {
             student = allStudents.find(s => s.id === userData.studentId);
           }
+          // Telefon — normallashtirilgan solishtirish (+998, bo'sh joy, tire
+          // kabi format farqlari muammo bo'lmasligi uchun)
           if (!student && userData?.phone) {
-            student = allStudents.find(s => s.phone === userData.phone);
+            student = allStudents.find(s => s.isMine);
           }
         } else if (role === ROLES.PARENT) {
           // Ota-ona - childId yoki phone orqali
@@ -169,8 +141,8 @@ const Payments = () => {
             student = allStudents.find(s => s.id === userData.childIds[0]);
           }
           if (!student && userData?.phone) {
-            // Ota-ona telefoni orqali bolani topish
-            student = allStudents.find(s => s.parentPhone === userData.phone);
+            // Ota-ona telefoni orqali bolani topish — normallashtirilgan solishtirish bilan
+            student = allStudents.find(s => s.isMine);
           }
         }
         
@@ -190,12 +162,11 @@ const Payments = () => {
           paymentsData = await paymentsAPI.getByStudent(studentId);
           
           try {
-            const allBills = await paymentsAPI.getMonthlyBills();
-            billsData = (allBills || []).filter(b => b.studentId === studentId);
+            billsData = await paymentsAPI.getMonthlyBillsByStudent(studentId);
           } catch (e) {
             billsData = [];
           }
-          
+
         }
       } else if (isTeacher) {
         // O'qituvchi - faqat o'z guruhlari o'quvchilarini
@@ -209,7 +180,10 @@ const Payments = () => {
         
         let teacher = allTeachers.find(t => t.email === userEmail);
         if (!teacher && userPhone) {
-          teacher = allTeachers.find(t => t.phone === userPhone);
+          // Telefon — normallashtirilgan solishtirish bilan
+          teacher = allTeachers.find(t =>
+            t.phone === userPhone || normalizePhone(t.phone) === normalizePhone(userPhone)
+          );
         }
         if (!teacher && userFullName) {
           teacher = allTeachers.find(t => t.fullName === userFullName);
@@ -245,8 +219,8 @@ const Payments = () => {
         paymentsData = yearPayments.filter(p => studentIds.includes(p.studentId));
         
         try {
-          const allBills = await paymentsAPI.getMonthlyBills();
-          billsData = (allBills || []).filter(b => studentIds.includes(b.studentId));
+          const recentBills = await paymentsAPI.getMonthlyBillsSince(billsSinceMonth);
+          billsData = recentBills.filter(b => studentIds.includes(b.studentId));
         } catch (e) {
           billsData = [];
         }
@@ -259,12 +233,22 @@ const Payments = () => {
           paymentsAPI.getSince(yearStart)
         ]);
         
-        studentsData = allStudents.filter(s => s.status === 'active' || !s.status);
+        studentsData = allStudents.filter(s =>
+          s.status === 'active' ||
+          (!s.status && !s.graduatedAt && !s.archivedAt)
+        );
+        // MUHIM: bitirgan guruhlar ham SAQLANADI. Ilgari ular bu yerda
+        // chiqarib tashlanardi, lekin bu massiv guruh NOMI va NARXINI
+        // topish uchun ham ishlatiladi. Natijada bitirgan guruhdagi hali
+        // faol o'quvchi "Guruhsiz" bo'lib ko'rinar, undan ham yomoni —
+        // guruh narxi topilmay, standart narx (500 000) bo'yicha qarz
+        // hisoblanardi (haqiqiy narx 300 000 bo'lsa ham).
+        // Tanlov ro'yxatida esa faqat faol guruhlar ko'rsatiladi (selectableGroups).
         groupsData = allGroups;
         paymentsData = allPayments;
         
         try {
-          billsData = await paymentsAPI.getMonthlyBills();
+          billsData = await paymentsAPI.getMonthlyBillsSince(billsSinceMonth);
         } catch (e) {
           billsData = [];
         }
@@ -279,15 +263,17 @@ const Payments = () => {
       const convertedBills = convertOldPaymentsToBills(paymentsData, billsData || [], studentsData, groupsData, settingsData);
       setMonthlyBills(convertedBills);
 
-      // Auto-reminder: faqat admin/direktor uchun
-      if (settingsData?.telegramEnabled || true) {
-        const pending = getPendingReminders(
-          studentsData.filter(s => s.status === 'active'),
-          convertedBills,
-          settingsData || {}
-        );
-        setPendingReminders(pending);
-      }
+      // Auto-reminder ro'yxati (Telegram sozlanmagan bo'lsa ham in-app xabar ketadi)
+      // groupsData uzatiladi — qarz sahifadagi bilan bir xil hisoblanadi
+      // (yozuvi yo'q, umuman to'lanmagan oylar ham eslatmaga kiradi)
+      const pending = getPendingReminders(
+        studentsData.filter(s => s.status === 'active'),
+        convertedBills,
+        settingsData || {},
+        groupsData,
+        paymentsData
+      );
+      setPendingReminders(pending);
     } catch (err) {
       if (!isMountedRef.current) return;
       console.error('fetchData error:', err);
@@ -523,7 +509,7 @@ const Payments = () => {
       return dbBills.sort((a, b) => (b.periodStart || b.month).localeCompare(a.periodStart || a.month));
     }
 
-    const periods = getStudentPeriods(student);
+    const periods = getStudentPeriods(student, groups.find(g => g.id === student.groupId));
     if (periods.length === 0) return dbBills;
 
     // Har bir davr uchun bill olish yoki virtual yaratish
@@ -584,6 +570,13 @@ const Payments = () => {
   // To'lov qilish
   const handlePayment = async (e) => {
     e.preventDefault();
+    // Ikki marta yuborishdan SINXRON himoya. Tugmaning `loading` holati yetarli
+    // emas: u faqat React qayta chizgandan keyin o'chadi, bu sahifa esa og'ir
+    // (har o'quvchi uchun davrlar hisoblanadi) — sekin qurilmada ikkinchi
+    // bosish shu oraliqda o'tib ketadi. Haqiqiy holat: bitta naqd to'lov
+    // 0,24 soniya farq bilan IKKI marta yozilgan (2 ta payments hujjati,
+    // 2 ta hisob) va daromad 300 000 ga oshib ketgan.
+    if (submittingRef.current) return;
     const errors = validatePaymentForm(paymentForm);
     if (hasErrors(errors)) {
       toast.error(Object.values(errors)[0]);
@@ -594,6 +587,7 @@ const Payments = () => {
       return;
     }
 
+    submittingRef.current = true;
     setFormLoading(true);
     try {
       const paidAmount = Math.round(Number(paymentForm.amount)); // O'quvchi bergan summa (butun son, so'm)
@@ -663,48 +657,55 @@ const Payments = () => {
         };
 
         if (bill.isVirtual || !bill.id) {
-          // Yangi bill yaratish (chegirmali narx bilan)
-          const newBill = await paymentsAPI.createMonthlyBill({
-            studentId: selectedStudent.id,
-            studentName: student?.fullName || '',
-            groupId: student?.groupId || '',
-            groupName: group?.name || '',
-            month: bill.month,
-            periodStart: bill.periodStart || null,
-            periodEnd: bill.periodEnd || null,
-            periodDisplay: bill.periodDisplay || null,
-            totalAmount: billTotalWithDiscount,
-            originalAmount: monthlyFee,
-            paidAmount: newPaidAmount,
-            remainingAmount: newRemainingAmount,
-            status: newStatus,
-            appliedDiscount: discount,
-            discountType: discountType,
-            discountAmount: discountAmount,
-            payments: [paymentRecord]
+          // Yangi bill — ATOMIK yaratish/qo'shish (deterministik ID + transaction).
+          // Ikki foydalanuvchi bir vaqtda AYNAN shu davr uchun BIRINCHI to'lovni
+          // kiritsa ham, faqat bitta hisob-kitob hujjati yaraladi (dublikat yo'q) —
+          // tafsilot: services/api.js dagi applyPeriodPayment izohida.
+          const periodKey = bill.periodStart || bill.month;
+          const newBill = await paymentsAPI.applyPeriodPayment(selectedStudent.id, periodKey, {
+            paymentAmount: paymentForThisBill,
+            paymentRecord,
+            billDefaults: {
+              studentName: student?.fullName || '',
+              groupId: student?.groupId || '',
+              groupName: group?.name || '',
+              month: bill.month,
+              periodStart: bill.periodStart || null,
+              periodEnd: bill.periodEnd || null,
+              periodDisplay: bill.periodDisplay || null,
+              totalAmount: billTotalWithDiscount,
+              originalAmount: monthlyFee,
+              appliedDiscount: discount,
+              discountType: discountType,
+              discountAmount: discountAmount,
+            },
           });
           updatedBills.push(newBill);
         } else {
-          // Mavjud billni yangilash
-          // Agar chegirma yangi qo'llanayotgan bo'lsa, totalAmount ni ham yangilash
-          const updateData = {
+          // Mavjud billni ATOMIK yangilash (increment/arrayUnion) — bir vaqtda
+          // ikki to'lov kiritilsa ham summalar yo'qolmasligi uchun (Payments.jsx
+          // handlePayment ilgari absolyut son bilan updateDoc qilardi — "oxirgi
+          // yozuvchi g'olib" bo'lib, boshqa to'lov Firestore'da yo'qolib qolardi).
+          const paymentPayload = { paymentAmount: paymentForThisBill, paymentRecord, status: newStatus };
+
+          // Chegirma birinchi marta qo'llanayotgan bo'lsa
+          if (discount > 0 && !bill.appliedDiscount) {
+            paymentPayload.totalAmount = billTotalWithDiscount;
+            paymentPayload.originalAmount = bill.totalAmount;
+            paymentPayload.appliedDiscount = discount;
+            paymentPayload.discountType = discountType;
+            paymentPayload.discountAmount = discountAmount;
+          }
+
+          await paymentsAPI.applyBillPayment(bill.id, paymentPayload);
+          // Optimistik lokal holat — fetchData() pastda darhol haqiqiy qiymat bilan almashtiradi
+          updatedBills.push({
+            ...bill,
             paidAmount: newPaidAmount,
             remainingAmount: newRemainingAmount,
             status: newStatus,
-            payments: [...(bill.payments || []), paymentRecord]
-          };
-          
-          // Chegirma birinchi marta qo'llanayotgan bo'lsa
-          if (discount > 0 && !bill.appliedDiscount) {
-            updateData.totalAmount = billTotalWithDiscount;
-            updateData.originalAmount = bill.totalAmount;
-            updateData.appliedDiscount = discount;
-            updateData.discountType = discountType;
-            updateData.discountAmount = discountAmount;
-          }
-          
-          const updatedBill = await paymentsAPI.updateMonthlyBill(bill.id, updateData);
-          updatedBills.push({ ...bill, ...updatedBill });
+            payments: [...(bill.payments || []), paymentRecord],
+          });
         }
       }
 
@@ -751,6 +752,7 @@ const Payments = () => {
       console.error(err);
       toast.error("Xatolik yuz berdi");
     } finally {
+      submittingRef.current = false;
       setFormLoading(false);
     }
   };
@@ -975,43 +977,70 @@ const Payments = () => {
     }
   };
 
-  // Statistika (joriy 12-dars davrlari asosida)
+  // Statistika
   const getStats = () => {
+    const monthStr = selectedMonth || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+
+    // Jami qarz — barcha o'quvchilarning barcha davrlar bo'yicha umumiy qolgan qarzi
     let totalDebt = 0;
-    let totalPaid = 0;
+    // To'langan/Qisman/Qarzdor — har o'quvchining JORIY billing davri holati
     let debtors = 0;
     let partialPaid = 0;
     let fullyPaid = 0;
 
     students.forEach(student => {
+      if (student.isFree) return;
+
+      // Jami qarz: barcha to'lanmagan billlar yig'indisi
+      totalDebt += getStudentTotalDebt(student.id);
+
+      // Soni: joriy billing davr (bugun) bo'yicha holat
       const status = getStudentPaymentStatus(student);
-      totalDebt += status.debt;
       if (status.status === 'paid') fullyPaid++;
       else if (status.status === 'partial') partialPaid++;
-      else if (status.debt > 0) debtors++;
-
-      // Joriy davr uchun to'langan summa
-      const currentPeriod = getCurrentPeriod(student);
-      if (currentPeriod) {
-        const bill = monthlyBills.find(b =>
-          b.studentId === student.id &&
-          (b.periodStart === currentPeriod.periodStart || b.month === currentPeriod.month)
-        );
-        totalPaid += bill?.paidAmount || 0;
-      }
+      else if (status.status === 'debtor' || status.debt > 0) debtors++;
+      else if (status.status === 'pending') debtors++;
     });
+
+    // Bu oy to'langan — faqat selectedMonth da paidAt bo'lgan haqiqiy to'lovlar
+    const totalPaid = payments
+      .filter(p => {
+        if (p.type === 'expense' || !p.amount) return false;
+        const raw = p.paidAt || p.createdAt;
+        if (!raw) return false;
+        let d;
+        if (typeof raw === 'string') d = new Date(raw);
+        else if (raw?.seconds) d = new Date(raw.seconds * 1000);
+        else if (raw?.toDate) d = raw.toDate();
+        else return false;
+        if (isNaN(d.getTime())) return false;
+        const payMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        return payMonth === monthStr;
+      })
+      .reduce((sum, p) => sum + (parseInt(p.amount) || 0), 0);
 
     return { totalDebt, totalPaid, debtors, partialPaid, fullyPaid };
   };
 
-  const stats = getStats();
+  // useMemo: getStats() har talaba uchun getStudentTotalDebt/getStudentPaymentStatus
+  // (ikkalasi ham getStudentBills orqali monthlyBills massivini skanerlaydi)
+  // chaqiradi — bu 1000+ talabada memo'siz HAR renderda (masalan qidiruv
+  // maydoniga bitta harf kiritilganda ham) to'liq qayta hisoblanardi.
+  const stats = useMemo(() => getStats(), [students, groups, monthlyBills, payments, settings, selectedMonth]);
 
-  // Filtrlangan o'quvchilar
-  const filteredStudents = students.filter(student => {
+  // Filtrlangan o'quvchilar — xuddi shu sababdan useMemo bilan o'ralgan.
+  // MUHIM: searchQuery/filterGroup/filterStatus ham deps'da — ular o'zgarsa
+  // (foydalanuvchi qidiryapti/filtrlayapti) baribir qayta hisoblanadi, bu to'g'ri;
+  // farqi shundaki, ULARGA ALOQASIZ render'larda (masalan modal ochilganda)
+  // endi qayta hisoblanmaydi.
+  const filteredStudents = useMemo(() => students.filter(student => {
+    // Bitirgan va arxivdagi o'quvchilar hech qachon ko'rinmasin
+    if (student.status === 'graduated' || student.status === 'archived') return false;
+
     // Qidiruv bo'yicha
     const matchesSearch = student.fullName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       student.phone?.includes(searchQuery);
-    
+
     if (!matchesSearch) return false;
 
     // Guruh bo'yicha filter
@@ -1021,16 +1050,17 @@ const Payments = () => {
 
     // Status bo'yicha filter
     if (filterStatus === 'all') return true;
-    
+
     const status = getStudentPaymentStatus(student);
-    
+
     // "Qarzdor" filterida - qarz bor bo'lgan barcha o'quvchilar
     if (filterStatus === 'debtor') {
       return status.debt > 0;
     }
-    
+
     return status.status === filterStatus;
-  });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [students, groups, monthlyBills, payments, settings, searchQuery, filterGroup, filterStatus]);
 
   // Toggle student expansion
   const toggleStudentExpand = (studentId) => {
@@ -1044,10 +1074,13 @@ const Payments = () => {
   const [selectedStudentIds, setSelectedStudentIds] = useState(new Set());
   const [bulkActionLoading, setBulkActionLoading] = useState(false);
 
-  const debtorIds = filteredStudents.filter(s => {
-    const st = getStudentPaymentStatus(s);
-    return st.debt > 0;
-  }).map(s => s.id);
+  // filteredStudents allaqachon memo qilingani uchun bu yerda faqat shu
+  // ro'yxat o'zgarganda qayta hisoblanadi (har renderda emas)
+  const debtorIds = useMemo(
+    () => filteredStudents.filter(s => getStudentPaymentStatus(s).debt > 0).map(s => s.id),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filteredStudents, monthlyBills, payments, groups, settings]
+  );
 
   const allDebtorsSelected = debtorIds.length > 0 && debtorIds.every(id => selectedStudentIds.has(id));
   const someBulkSelected = selectedStudentIds.size > 0;
@@ -1158,14 +1191,15 @@ const Payments = () => {
   };
 
   // Oy nomlari
-  const getMonthName = (monthStr) => {
-    const [year, month] = monthStr.split('-');
-    const months = ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun', 
-                    'Iyul', 'Avgust', 'Sentyabr', 'Oktyabr', 'Noyabr', 'Dekabr'];
-    return `${months[parseInt(month) - 1]} ${year}`;
-  };
+  // Oy nomlari utils/helpers.js da — yagona manba (ilgari bu yerda ham,
+  // Dashboard.jsx da ham alohida nusxa bor edi, imlosi ham har xil edi)
+  const getMonthName = (monthStr) => formatMonthUz(monthStr);
 
   // O'qituvchi oyligi hisoblash
+  // Tanlov ro'yxatlari uchun — bitirgan guruhlar ko'rsatilmaydi.
+  // Qidirish/hisoblash uchun esa to'liq `groups` ishlatiladi.
+  const selectableGroups = groups.filter(g => g.status !== 'graduated');
+
   const getTeacherSalaryInfo = () => {
     if (!isTeacher || !userData?.id) return null;
     
@@ -1387,7 +1421,7 @@ const Payments = () => {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Card padding="p-4" className="bg-red-50">
             <p className="text-2xl font-bold text-red-700">{formatMoney(stats.totalDebt)}</p>
-            <p className="text-sm text-red-600">Umumiy qarz</p>
+            <p className="text-sm text-red-600">Jami qarz</p>
           </Card>
           <Card padding="p-4" className="bg-green-50">
             <p className="text-2xl font-bold text-green-700">{formatMoney(stats.totalPaid)}</p>
@@ -1574,7 +1608,7 @@ const Payments = () => {
             </div>
             <div>
               <p className="text-2xl font-bold text-red-700">{formatMoney(stats.totalDebt)}</p>
-              <p className="text-sm text-red-600">Umumiy qarz</p>
+              <p className="text-sm text-red-600">Jami qarz</p>
             </div>
           </div>
         </Card>
@@ -1633,7 +1667,7 @@ const Payments = () => {
               className="px-3 py-2 border rounded-lg text-base md:text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100"
             >
               <option value="all">Barcha guruhlar</option>
-              {groups.map(g => (
+              {selectableGroups.map(g => (
                 <option key={g.id} value={g.id}>{g.name}</option>
               ))}
             </select>
@@ -1918,7 +1952,7 @@ const Payments = () => {
                 </div>
               </div>
               <div className="flex items-center justify-between p-3 bg-red-50 rounded-lg">
-                <span className="text-red-700">Umumiy qarz:</span>
+                <span className="text-red-700">Jami qarz:</span>
                 <span className="text-xl font-bold text-red-700">
                   {formatMoney(getStudentTotalDebt(selectedStudent.id))}
                 </span>

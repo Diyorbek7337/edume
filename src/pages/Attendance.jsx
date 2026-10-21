@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Calendar, ChevronLeft, ChevronRight, Check, X, Clock, AlertCircle, Save, Users, History } from 'lucide-react';
 import { Card, Button, Select, Badge, Avatar, Loading } from '../components/common';
-import { groupsAPI, studentsAPI, attendanceAPI, teachersAPI } from '../services/api';
+import { studentsAPI, attendanceAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { useRoleScopedGroups } from '../hooks/useRoleScopedGroups';
 import { ROLES, ATTENDANCE_STATUS } from '../utils/constants';
 import { formatDate, formatDateISO } from '../utils/helpers';
 import { toast } from 'react-toastify';
@@ -10,14 +11,12 @@ import { captureError } from '../services/sentry';
 
 const Attendance = () => {
   const { userData, role } = useAuth();
-  const [groups, setGroups] = useState([]);
+  const { groups, studentData, loading, error: groupsError } = useRoleScopedGroups(role, userData);
   const [students, setStudents] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [selectedGroup, setSelectedGroup] = useState('');
   const [attendance, setAttendance] = useState({});
   const [saving, setSaving] = useState(false);
-  const [studentData, setStudentData] = useState(null);
   const [isLocked, setIsLocked] = useState(false);
 
   // Davomat tarixi
@@ -36,7 +35,18 @@ const Attendance = () => {
   const isAdmin = role === ROLES.ADMIN || role === ROLES.DIRECTOR;
   const canEdit = (isTeacher || isAdmin) && !isLocked;
 
-  useEffect(() => { fetchGroups(); }, []);
+  // Guruhlar useRoleScopedGroups orqali yuklanadi; bu yerda faqat shu sahifaga
+  // xos xatti-harakatlar: bitta guruh bo'lsa avtomatik tanlash va xato bo'lsa toast
+  useEffect(() => {
+    if (groups.length === 1) setSelectedGroup(groups[0].id);
+  }, [groups]);
+
+  useEffect(() => {
+    if (groupsError) {
+      captureError(groupsError, { context: 'fetchGroups' });
+      toast.error("Guruhlar yuklanmadi. Sahifani yangilang.", { toastId: 'attendance-load-error' });
+    }
+  }, [groupsError]);
 
   useEffect(() => {
     if (selectedGroup) fetchStudentsAndAttendance();
@@ -73,73 +83,6 @@ const Attendance = () => {
     } finally {
       setHistoryLoading(false);
     }
-  };
-
-  const fetchGroups = async () => {
-    try {
-      let groupsData = [];
-
-      if (isTeacher) {
-        const allTeachers = await teachersAPI.getAll();
-        const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
-
-        const teacher = allTeachers.find(t =>
-          t.id === userData?.id ||
-          t.email === userData?.email ||
-          t.phone === userData?.phone ||
-          normalizePhone(t.phone) === normalizePhone(userData?.phone)
-        );
-
-        const allGroups = await groupsAPI.getAll();
-
-        if (teacher) {
-          groupsData = allGroups.filter(g => g.teacherId === teacher.id);
-        }
-
-        const groups2 = allGroups.filter(g => g.teacherId === userData?.id);
-
-        groupsData = [...groupsData, ...groups2].filter((g, index, self) =>
-          index === self.findIndex(t => t.id === g.id)
-        );
-
-      } else if (isStudentOrParent) {
-        const allStudentsData = await studentsAPI.getAll();
-        let student;
-
-        if (role === ROLES.PARENT) {
-          student = allStudentsData.find(s =>
-            s.parentPhone === userData?.phone ||
-            s.parentPhone?.replace(/\D/g, '') === userData?.phone?.replace(/\D/g, '')
-          );
-        } else {
-          student = allStudentsData.find(s =>
-            s.email === userData?.email ||
-            s.phone === userData?.phone ||
-            s.phone?.replace(/\D/g, '') === userData?.phone?.replace(/\D/g, '')
-          );
-        }
-
-        if (student) {
-          setStudentData(student);
-          const allGroups = await groupsAPI.getAll();
-          groupsData = allGroups.filter(g =>
-            g.id === student.groupId ||
-            g.studentIds?.includes(student.id)
-          );
-        }
-      } else {
-        groupsData = await groupsAPI.getAll();
-      }
-
-      setGroups(groupsData);
-
-      if (groupsData.length === 1) {
-        setSelectedGroup(groupsData[0].id);
-      }
-    } catch (err) {
-      captureError(err, { context: 'fetchGroups' });
-      toast.error("Guruhlar yuklanmadi. Sahifani yangilang.", { toastId: 'attendance-load-error' });
-    } finally { setLoading(false); }
   };
 
   const fetchStudentsAndAttendance = async () => {

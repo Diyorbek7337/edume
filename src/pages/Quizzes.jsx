@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { 
+import {
   FileQuestion, Plus, Clock, CheckCircle, XCircle, Play, Trophy,
   Users, BarChart3, Eye, Trash2, ChevronRight, ChevronLeft, Target, Percent,
-  Upload, Download, Sparkles, FileSpreadsheet, Wand2, Loader2, AlertCircle
+  Upload, Download, FileSpreadsheet
 } from 'lucide-react';
 import { Card, Button, Input, Select, Badge, Avatar, Modal, Loading } from '../components/common';
 import { Textarea } from '../components/common/Textarea';
-import { quizAPI, groupsAPI, studentsAPI, teachersAPI } from '../services/api';
-import { geminiAPI } from '../services/gemini';
+import { quizAPI, studentsAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { useRoleScopedGroups } from '../hooks/useRoleScopedGroups';
 import { ROLES } from '../utils/constants';
 import { formatDate } from '../utils/helpers';
 import { toast } from 'react-toastify';
@@ -16,26 +16,16 @@ import * as XLSX from 'xlsx';
 
 const Quizzes = () => {
   const { userData, role } = useAuth();
+  const { groups, studentData, loading } = useRoleScopedGroups(role, userData);
   const [quizzes, setQuizzes] = useState([]);
-  const [groups, setGroups] = useState([]);
   const [students, setStudents] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [selectedGroup, setSelectedGroup] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showQuizModal, setShowQuizModal] = useState(false);
   const [showResultsModal, setShowResultsModal] = useState(false);
-  const [showAIModal, setShowAIModal] = useState(false);
   const [selectedQuiz, setSelectedQuiz] = useState(null);
-  const [studentData, setStudentData] = useState(null);
   const [filter, setFilter] = useState('all');
   const fileInputRef = useRef(null);
-
-  const [aiTopic, setAiTopic] = useState('');
-  const [aiQuestionCount, setAiQuestionCount] = useState(5);
-  const [aiDifficulty, setAiDifficulty] = useState('medium');
-  const [aiLanguage, setAiLanguage] = useState('uz');
-  const [aiGenerating, setAiGenerating] = useState(false);
-  const [aiQuestions, setAiQuestions] = useState([]);
 
   const [quizForm, setQuizForm] = useState({
     title: '', description: '', groupId: '', timeLimit: 30, passingScore: 60, questions: []
@@ -56,7 +46,11 @@ const Quizzes = () => {
   const isStudentOrParent = role === ROLES.STUDENT || role === ROLES.PARENT;
   const canCreate = isTeacher || isAdmin;
 
-  useEffect(() => { fetchData(); }, []);
+  // Guruhlar useRoleScopedGroups orqali yuklanadi
+  useEffect(() => {
+    if (groups.length === 1) setSelectedGroup(groups[0].id);
+  }, [groups]);
+
   useEffect(() => { if (selectedGroup) fetchQuizzes(); }, [selectedGroup]);
 
   useEffect(() => {
@@ -71,40 +65,6 @@ const Quizzes = () => {
     }
     return () => clearInterval(interval);
   }, [quizStarted, timeLeft, quizFinished]);
-
-  const fetchData = async () => {
-    try {
-      let groupsData = [];
-      if (isTeacher) {
-        const allTeachers = await teachersAPI.getAll();
-        const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
-        const teacher = allTeachers.find(t => t.id === userData?.id || t.email === userData?.email || normalizePhone(t.phone) === normalizePhone(userData?.phone));
-        const allGroups = await groupsAPI.getAll();
-        if (teacher) groupsData = allGroups.filter(g => g.teacherId === teacher.id);
-        const groups2 = allGroups.filter(g => g.teacherId === userData?.id);
-        groupsData = [...groupsData, ...groups2].filter((g, i, self) => i === self.findIndex(t => t.id === g.id));
-      } else if (isStudentOrParent) {
-        const allStudents = await studentsAPI.getAll();
-        const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
-        let student;
-        if (role === ROLES.PARENT) {
-          student = allStudents.find(s => s.parentPhone === userData?.phone || normalizePhone(s.parentPhone) === normalizePhone(userData?.phone));
-        } else {
-          student = allStudents.find(s => s.email === userData?.email || normalizePhone(s.phone) === normalizePhone(userData?.phone));
-        }
-        if (student) {
-          setStudentData(student);
-          const allGroups = await groupsAPI.getAll();
-          groupsData = allGroups.filter(g => g.id === student.groupId || g.studentIds?.includes(student.id));
-        }
-      } else {
-        groupsData = await groupsAPI.getAll();
-      }
-      setGroups(groupsData);
-      if (groupsData.length === 1) setSelectedGroup(groupsData[0].id);
-    } catch (err) { console.error(err); }
-    finally { setLoading(false); }
-  };
 
   const fetchQuizzes = async () => {
     try {
@@ -189,60 +149,6 @@ const Quizzes = () => {
     XLSX.utils.book_append_sheet(wb, ws, 'Shablon');
     XLSX.writeFile(wb, 'test_shablon.xlsx');
     toast.success("Shablon yuklab olindi!");
-  };
-
-  // AI Generation - Gemini API
-  const generateAIQuestions = async () => {
-    if (!aiTopic.trim()) { 
-      toast.error("Mavzuni kiriting"); 
-      return; 
-    }
-    
-    setAiGenerating(true);
-    try {
-      const questions = await geminiAPI.generateQuestions(
-        aiTopic, 
-        aiQuestionCount, 
-        aiDifficulty, 
-        aiLanguage
-      );
-      
-      setAiQuestions(questions);
-      toast.success(`${questions.length} ta savol yaratildi! To'g'ri javoblarni tekshiring!`);
-    } catch (err) { 
-      console.error('AI generation error:', err); 
-      
-      if (err.message?.includes('API key')) {
-        toast.error("API key xato yoki muddati tugagan");
-      } else if (err.message?.includes('quota')) {
-        toast.error("API limit tugadi. Keyinroq urinib ko'ring.");
-      } else {
-        toast.error("AI xatolik: " + (err.message || "Noma'lum xato"));
-      }
-    }
-    finally { setAiGenerating(false); }
-  };
-
-  const updateAiQuestion = (index, field, value) => {
-    const updated = [...aiQuestions];
-    updated[index] = { ...updated[index], [field]: value };
-    setAiQuestions(updated);
-  };
-
-  const updateAiQuestionOption = (qIndex, optIndex, value) => {
-    const updated = [...aiQuestions];
-    updated[qIndex].options[optIndex] = value;
-    setAiQuestions(updated);
-  };
-
-  const removeAiQuestion = (index) => setAiQuestions(aiQuestions.filter((_, i) => i !== index));
-
-  const addAIQuestionsToQuiz = () => {
-    if (aiQuestions.length === 0) { toast.error("Savollar yo'q"); return; }
-    setQuizForm({ ...quizForm, questions: [...quizForm.questions, ...aiQuestions] });
-    setAiQuestions([]);
-    setShowAIModal(false);
-    toast.success("Savollar qo'shildi!");
   };
 
   const addQuestion = () => {
@@ -472,7 +378,6 @@ const Quizzes = () => {
             <input type="file" ref={fileInputRef} onChange={handleExcelImport} accept=".xlsx,.xls" className="hidden" />
             <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}><Upload className="w-4 h-4 mr-2" />Exceldan</Button>
             <Button variant="outline" size="sm" onClick={downloadTemplate}><FileSpreadsheet className="w-4 h-4 mr-2" />Shablon</Button>
-            <Button variant="outline" size="sm" onClick={() => setShowAIModal(true)} className="bg-gradient-to-r from-purple-50 to-blue-50"><Sparkles className="w-4 h-4 mr-2 text-purple-600" />AI bilan</Button>
           </div>
 
           {quizForm.questions.length > 0 && (
@@ -495,69 +400,6 @@ const Quizzes = () => {
           </div>
 
           <div className="flex gap-2 pt-4 border-t"><Button onClick={handleCreateQuiz} className="flex-1" disabled={quizForm.questions.length === 0}>Test yaratish ({quizForm.questions.length})</Button><Button variant="outline" onClick={() => setShowCreateModal(false)}>Bekor</Button></div>
-        </div>
-      </Modal>
-
-      {/* AI Modal */}
-      <Modal isOpen={showAIModal} onClose={() => { setShowAIModal(false); setAiQuestions([]); }} title="AI bilan test" size="xl">
-        <div className="space-y-6 max-h-[70vh] overflow-y-auto">
-          {aiQuestions.length === 0 ? (
-            <>
-              <div className="text-center p-6 bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg">
-                <Sparkles className="w-12 h-12 text-purple-500 mx-auto mb-3" />
-                <h3 className="font-semibold text-lg">AI yordamida test yarating</h3>
-                <p className="text-gray-600 mt-2">
-                  {geminiAPI.isConfigured() 
-                    ? `${geminiAPI.getProvider() === 'groq' ? 'Groq (Llama 3.3)' : 'Google Gemini'} orqali savollar yaratiladi`
-                    : 'Mavzu kiriting, AI savollar tuzib beradi'
-                  }
-                </p>
-              </div>
-              
-              {!geminiAPI.isConfigured() && (
-                <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-red-500 mt-0.5" />
-                    <div>
-                      <p className="font-medium text-red-800">API key sozlanmagan!</p>
-                      <p className="text-sm text-red-700 mt-1">
-                        <strong>Groq (tavsiya):</strong> <a href="https://console.groq.com/keys" target="_blank" className="underline">console.groq.com</a><br/>
-                        <code className="bg-red-100 px-1 rounded text-xs">VITE_GROQ_API_KEY=gsk_...</code>
-                        <br/><br/>
-                        <strong>Gemini:</strong> <a href="https://makersuite.google.com/app/apikey" target="_blank" className="underline">Google AI Studio</a><br/>
-                        <code className="bg-red-100 px-1 rounded text-xs">VITE_GEMINI_API_KEY=AIza...</code>
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-              
-              <Input label="Mavzu" value={aiTopic} onChange={(e) => setAiTopic(e.target.value)} placeholder="Matematika - Kvadrat tenglamalar" />
-              <div className="grid grid-cols-3 gap-4">
-                <Input type="number" label="Savollar" value={aiQuestionCount} onChange={(e) => setAiQuestionCount(parseInt(e.target.value))} min="1" max="20" />
-                <Select label="Qiyinlik" value={aiDifficulty} onChange={(e) => setAiDifficulty(e.target.value)} options={[{ value: 'easy', label: 'Oson' }, { value: 'medium', label: "O'rta" }, { value: 'hard', label: 'Qiyin' }]} />
-                <Select label="Til" value={aiLanguage} onChange={(e) => setAiLanguage(e.target.value)} options={[{ value: 'uz', label: "O'zbek" }, { value: 'ru', label: 'Rus' }, { value: 'en', label: 'English' }]} />
-              </div>
-              <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg"><p className="text-sm text-yellow-800"><strong>⚠️</strong> AI yaratgan savollarni tekshiring va to'g'ri javoblarni belgilang!</p></div>
-              <Button onClick={generateAIQuestions} className="w-full" loading={aiGenerating} disabled={!aiTopic.trim() || !geminiAPI.isConfigured()}>{aiGenerating ? (<><Loader2 className="w-4 h-4 mr-2 animate-spin" />Yaratilmoqda...</>) : (<><Wand2 className="w-4 h-4 mr-2" />Yaratish</>)}</Button>
-            </>
-          ) : (
-            <>
-              <div className="flex items-center justify-between"><h3 className="font-semibold">Savollar ({aiQuestions.length})</h3><Button variant="outline" size="sm" onClick={() => setAiQuestions([])}><Wand2 className="w-4 h-4 mr-1" />Qayta</Button></div>
-              <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg"><p className="text-sm text-yellow-800"><strong>⚠️</strong> To'g'ri javoblarni belgilang!</p></div>
-              <div className="space-y-4 max-h-96 overflow-y-auto">
-                {aiQuestions.map((q, idx) => (
-                  <div key={q.id} className="p-4 bg-gray-50 rounded-lg border">
-                    <div className="flex items-start justify-between mb-2"><span className="font-medium text-sm text-gray-500">Savol {idx + 1}</span><button onClick={() => removeAiQuestion(idx)} className="text-red-500"><XCircle className="w-4 h-4" /></button></div>
-                    <Textarea value={q.question} onChange={(e) => updateAiQuestion(idx, 'question', e.target.value)} rows={2} className="mb-3" />
-                    <div className="space-y-2">{q.options.map((opt, optIdx) => (<div key={optIdx} className="flex items-center gap-2"><input type="radio" name={'correct-' + q.id} checked={q.correctAnswer === optIdx} onChange={() => updateAiQuestion(idx, 'correctAnswer', optIdx)} /><span className="w-6">{String.fromCharCode(65 + optIdx)})</span><Input value={opt} onChange={(e) => updateAiQuestionOption(idx, optIdx, e.target.value)} className="flex-1" /></div>))}</div>
-                    <div className="flex items-center gap-2 mt-2"><span className="text-sm text-gray-500">Ball:</span><Input type="number" value={q.points} onChange={(e) => updateAiQuestion(idx, 'points', parseInt(e.target.value))} className="w-20" min="1" /></div>
-                  </div>
-                ))}
-              </div>
-              <div className="flex gap-2"><Button onClick={addAIQuestionsToQuiz} className="flex-1"><Plus className="w-4 h-4 mr-2" />Qo'shish ({aiQuestions.length})</Button><Button variant="outline" onClick={() => setShowAIModal(false)}>Bekor</Button></div>
-            </>
-          )}
         </div>
       </Modal>
 

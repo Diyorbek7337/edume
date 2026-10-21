@@ -83,7 +83,7 @@ export const notifyAbsent = ({ studentName, groupName, date }) =>
 
 export const notifyPaymentDue = ({ studentName, debt, centerName }) =>
   showNotification('💰 To\'lov eslatmasi', {
-    body: `${centerName}: ${Number(debt).toLocaleString()} so'm to\'lov kutilmoqda`,
+    body: `${centerName}: ${Number(debt).toLocaleString()} so'm to'lov kutilmoqda`,
     tag: 'payment',
     url: '/my-payments',
   });

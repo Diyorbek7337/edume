@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(find 'd:/my project/my project/edu-center' -maxdepth 2 -name .env* -o -name *.config.* -type f)"
-    ]
-  }
-}

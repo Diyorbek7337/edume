@@ -5,8 +5,10 @@ import {
   TrendingDown, Percent, Target, ArrowUpRight, ArrowDownRight
 } from 'lucide-react';
 import { Card, Button, Badge, Loading } from '../components/common';
-import { studentsAPI, teachersAPI, groupsAPI, paymentsAPI, attendanceAPI, gradesAPI } from '../services/api';
+import { studentsAPI, teachersAPI, groupsAPI, paymentsAPI, centersAPI, attendanceAPI, gradesAPI } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
 import { formatMoney, formatDate } from '../utils/helpers';
+import { toast } from 'react-toastify';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, AreaChart, Area, Legend
@@ -15,7 +17,9 @@ import {
 const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4'];
 
 const Reports = () => {
+  const { centerId } = useAuth();
   const [loading, setLoading] = useState(true);
+  const [exportingPayments, setExportingPayments] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
   const [period, setPeriod] = useState('all');
   
@@ -51,19 +55,30 @@ const Reports = () => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [studentsData, teachersData, groupsData, paymentsData] = await Promise.all([
+      // MUHIM: paymentsAPI.getAll() (markazning BUTUN to'lov tarixi — yillar
+      // davomida minglab hujjat) o'rniga endi ikkita yengil manba ishlatiladi:
+      //   1) centersAPI.getById() — markaz hujjatidagi oldindan hisoblangan
+      //      revenueStats (jami daromad, oy/usul taqsimoti) — BITTA hujjat o'qish,
+      //      Cloud Function trigger (functions/index.js onPaymentWritten) orqali
+      //      har to'lovda avtomatik yangilanadi.
+      //   2) paymentsAPI.getSince(yearStart) — faqat "kutilayotgan to'lovlar"
+      //      ko'rsatkichi uchun, joriy yil bilan chegaralangan.
+      const yearStart = new Date(new Date().getFullYear(), 0, 1).toISOString();
+      const [studentsData, teachersData, groupsData, centerDoc, paymentsData] = await Promise.all([
         studentsAPI.getAll(),
         teachersAPI.getAll(),
         groupsAPI.getAll(),
-        paymentsAPI.getAll()
+        centerId ? centersAPI.getById(centerId) : Promise.resolve(null),
+        paymentsAPI.getSince(yearStart)
       ]);
-      
+
       setStudents(studentsData);
       setTeachers(teachersData);
       setGroups(groupsData);
       setPayments(paymentsData);
-      
-      
+
+      const revenueStats = centerDoc?.revenueStats || { total: 0, byMonth: {}, byMethod: {} };
+
       // Davomat va baholarni olish
       let allAttendance = [];
       let allGrades = [];
@@ -79,64 +94,48 @@ const Reports = () => {
       }
       setAttendance(allAttendance);
       setGrades(allGrades);
-      
-      
-      // Statistika hisoblash - period filter'siz
-      const paidPayments = paymentsData.filter(p => p.status === 'paid');
+
+
+      // Statistika hisoblash - period filter'siz.
+      // "pendingPayments" — joriy yil doirasida (paymentsData endi shu bilan chegaralangan)
       const pendingPaymentsList = paymentsData.filter(p => p.status === 'pending');
       const presentCount = allAttendance.filter(a => a.status === 'present').length;
-      const attendanceRate = allAttendance.length > 0 
+      const attendanceRate = allAttendance.length > 0
         ? Math.round((presentCount / allAttendance.length) * 100) : 0;
       const avgGrade = allGrades.length > 0
         ? Math.round(allGrades.reduce((sum, g) => sum + ((g.grade / g.maxGrade) * 100), 0) / allGrades.length) : 0;
-      
+
       setStats({
         students: studentsData.length,
         activeStudents: studentsData.filter(s => s.status === 'active').length,
         teachers: teachersData.length,
         groups: groupsData.length,
-        revenue: paidPayments.reduce((sum, p) => sum + (p.amount || 0), 0),
+        revenue: revenueStats.total || 0,
         pendingPayments: pendingPaymentsList.reduce((sum, p) => sum + (p.amount || 0), 0),
         attendanceRate,
         avgGrade
       });
-      
-      // Oylik daromad grafigi (oxirgi 6 oy)
+
+      // Oylik daromad grafigi (oxirgi 6 oy) — endi revenueStats.byMonth'dan,
+      // to'lovlarni qayta filtrlash shart emas
       const monthNames = ['Yan', 'Fev', 'Mar', 'Apr', 'May', 'Iyn', 'Iyl', 'Avg', 'Sen', 'Okt', 'Noy', 'Dek'];
       const now = new Date();
       const thisMonth = now.getMonth();
       const thisYear = now.getFullYear();
       const revenueByMonth = [];
-      
+
       for (let i = 5; i >= 0; i--) {
         const month = (thisMonth - i + 12) % 12;
         const year = thisMonth - i < 0 ? thisYear - 1 : thisYear;
-        const monthPayments = paymentsData.filter(p => {
-          if (p.status !== 'paid') return false;
-          let paidDate;
-          if (p.paidAt?.seconds) {
-            paidDate = new Date(p.paidAt.seconds * 1000);
-          } else if (p.paidAt?.toDate) {
-            paidDate = p.paidAt.toDate();
-          } else if (p.paidAt) {
-            paidDate = new Date(p.paidAt);
-          } else if (p.createdAt?.seconds) {
-            paidDate = new Date(p.createdAt.seconds * 1000);
-          } else if (p.createdAt?.toDate) {
-            paidDate = p.createdAt.toDate();
-          } else {
-            paidDate = new Date(p.createdAt);
-          }
-          return paidDate.getMonth() === month && paidDate.getFullYear() === year;
-        });
-        revenueByMonth.push({ 
-          name: monthNames[month], 
-          revenue: monthPayments.reduce((sum, p) => sum + (p.amount || 0), 0) / 1000000,
-          count: monthPayments.length
+        const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
+        const monthRevenue = revenueStats.byMonth?.[monthKey] || 0;
+        revenueByMonth.push({
+          name: monthNames[month],
+          revenue: monthRevenue / 1000000,
         });
       }
       setMonthlyRevenue(revenueByMonth);
-      
+
       // Guruhlar bo'yicha taqsimot
       const gStats = [];
       for (const g of groupsData) {
@@ -164,13 +163,8 @@ const Reports = () => {
       }
       setAttendanceTrend(attendanceTrendData);
       
-      // To'lov usullari
-      const methods = {};
-      paidPayments.forEach(p => {
-        const method = p.method || 'Naqd';
-        methods[method] = (methods[method] || 0) + (p.amount || 0);
-      });
-      setPaymentMethods(Object.entries(methods).map(([name, value]) => ({
+      // To'lov usullari — endi revenueStats.byMethod'dan
+      setPaymentMethods(Object.entries(revenueStats.byMethod || {}).map(([name, value]) => ({
         name,
         value: value / 1000000
       })));
@@ -191,22 +185,9 @@ const Reports = () => {
       const totalCollected = thisMonthBills.reduce((s, b) => s + (b.paidAmount || 0), 0);
       setCollectionRate(totalBilled > 0 ? Math.round((totalCollected / totalBilled) * 100) : 0);
 
-      // Bu oy va o'tgan oy daromad taqqoslash
-      const currentMonthRevenue = paymentsData
-        .filter(p => {
-          if (p.status !== 'paid') return false;
-          const d = p.paidAt?.toDate ? p.paidAt.toDate() : new Date(p.paidAt || p.createdAt);
-          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` === thisMonthStr;
-        })
-        .reduce((s, p) => s + (p.amount || 0), 0);
-
-      const prevMonthRevenue = paymentsData
-        .filter(p => {
-          if (p.status !== 'paid') return false;
-          const d = p.paidAt?.toDate ? p.paidAt.toDate() : new Date(p.paidAt || p.createdAt);
-          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` === prevMonthStr;
-        })
-        .reduce((s, p) => s + (p.amount || 0), 0);
+      // Bu oy va o'tgan oy daromad taqqoslash — endi revenueStats.byMonth'dan
+      const currentMonthRevenue = revenueStats.byMonth?.[thisMonthStr] || 0;
+      const prevMonthRevenue = revenueStats.byMonth?.[prevMonthStr] || 0;
 
       const growth = prevMonthRevenue > 0
         ? Math.round(((currentMonthRevenue - prevMonthRevenue) / prevMonthRevenue) * 100)
@@ -272,12 +253,26 @@ const Reports = () => {
     downloadCSV(headers, rows, 'students.csv');
   };
 
-  const exportPaymentsCSV = () => {
-    const headers = ["#", "O'quvchi", "Summa", "Usul", "Holat", "Sana"];
-    const rows = payments.map((p, i) => [
-      i + 1, p.studentName, p.amount, p.method, p.status, formatDate(p.paidAt || p.createdAt)
-    ]);
-    downloadCSV(headers, rows, 'payments.csv');
+  // MUHIM: `payments` state endi joriy yil bilan chegaralangan (yuqoridagi
+  // fetchData'ga qarang) — lekin CSV eksport an'anaviy ravishda BUTUN tarixni
+  // o'z ichiga olishi kerak (bu — kamdan-kam, foydalanuvchi bosgandagina
+  // ishlaydigan amal, shuning uchun to'liq tarixni shu yerda, on-demand olish
+  // xavfsiz: sahifa ochilganda emas, faqat eksport tugmasi bosilganda o'qiladi).
+  const exportPaymentsCSV = async () => {
+    setExportingPayments(true);
+    try {
+      const allPayments = await paymentsAPI.getAll();
+      const headers = ["#", "O'quvchi", "Summa", "Usul", "Holat", "Sana"];
+      const rows = allPayments.map((p, i) => [
+        i + 1, p.studentName, p.amount, p.method, p.status, formatDate(p.paidAt || p.createdAt)
+      ]);
+      downloadCSV(headers, rows, 'payments.csv');
+    } catch (err) {
+      console.error(err);
+      toast.error("To'lovlarni yuklashda xatolik yuz berdi");
+    } finally {
+      setExportingPayments(false);
+    }
   };
 
   const downloadCSV = (headers, rows, filename) => {
@@ -765,14 +760,17 @@ const Reports = () => {
             </div>
           </Card>
 
-          <Card className="hover:shadow-md transition cursor-pointer" onClick={exportPaymentsCSV}>
+          <Card
+            className={`hover:shadow-md transition ${exportingPayments ? 'opacity-60 pointer-events-none' : 'cursor-pointer'}`}
+            onClick={exportPaymentsCSV}
+          >
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
                 <CreditCard className="w-6 h-6 text-green-600" />
               </div>
               <div className="flex-1">
                 <h3 className="font-semibold">To'lovlar</h3>
-                <p className="text-sm text-gray-500">{payments.length} ta</p>
+                <p className="text-sm text-gray-500">{exportingPayments ? 'Yuklanmoqda...' : 'Butun tarix (CSV)'}</p>
               </div>
               <Download className="w-5 h-5 text-gray-400" />
             </div>

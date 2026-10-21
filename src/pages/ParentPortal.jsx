@@ -9,7 +9,7 @@ import { useAuth } from '../contexts/AuthContext';
 import {
   studentsAPI, groupsAPI, gradesAPI, attendanceAPI, paymentsAPI, scheduleAPI
 } from '../services/api';
-import { formatMoney, formatDate, toISODateString } from '../utils/helpers';
+import { formatMoney, formatDate, toISODateString, formatMonthUz } from '../utils/helpers';
 import { Link } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { captureError } from '../services/sentry';
@@ -28,24 +28,11 @@ const ParentPortal = () => {
   useEffect(() => {
     const fetchChildren = async () => {
       try {
-        const normalizePhone = (p) => p?.replace(/\D/g, '') || '';
-        const userPhone = normalizePhone(userData?.phone);
-        const childIds = userData?.childIds || (userData?.childId ? [userData.childId] : []);
-
-        let myChildren = [];
-
-        if (childIds.length > 0) {
-          // childIds mavjud bo'lsa, to'g'ridan-to'g'ri har birini olish (list ruxsati shart emas)
-          const fetched = await Promise.all(childIds.map(id => studentsAPI.getById(id)));
-          myChildren = fetched.filter(Boolean);
-        } else {
-          // childIds yo'q — telefon orqali qidirish
-          const allStudents = await studentsAPI.getAll();
-          myChildren = allStudents.filter(s => {
-            const parentPhone = normalizePhone(s.parentPhone);
-            return s.parentPhone === userData?.phone || (userPhone && parentPhone === userPhone);
-          });
-        }
+        // Farzandlar users.childIds orqali (server avtomatik bog'laydi — ota-ona
+        // telefoni talaba yozuvidagi "Ota-ona telefoni" bilan mos bo'lsa).
+        // Barcha talabalarni yuklab, telefon bo'yicha qidirish endi yo'q —
+        // ota-ona boshqa bolalarning ma'lumotlarini ko'ra olmasligi kerak.
+        const myChildren = await studentsAPI.getMine();
 
         setChildren(myChildren);
         if (myChildren.length > 0) {
@@ -113,7 +100,8 @@ const ParentPortal = () => {
         </div>
         <h2 className="text-xl font-bold text-gray-700 mb-2">Farzand topilmadi</h2>
         <p className="text-gray-500 max-w-sm">
-          Sizning farzandingiz hali tizimga qo'shilmagan. Administrator bilan bog'laning.
+          Hisobingiz hali farzandingiz profiliga bog'lanmagan. Administratordan farzandingiz
+          ma'lumotlarida «Ota-ona telefoni» sizning raqamingiz bilan bir xil ekanini tekshirishni so'rang.
         </p>
       </div>
     );
@@ -297,7 +285,7 @@ const ParentPortal = () => {
           <div className="flex-1">
             <p className="font-semibold text-yellow-800 dark:text-yellow-300">Bu oyga to'lov kutilmoqda</p>
             <p className="text-sm text-yellow-600 dark:text-yellow-400">
-              {now.toLocaleDateString('uz-UZ', { month: 'long', year: 'numeric' })} uchun to'lov qilinmagan
+              {formatMonthUz(now)} uchun to'lov qilinmagan
             </p>
           </div>
           <Link to="/my-payments">

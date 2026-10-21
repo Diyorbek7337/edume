@@ -1,7 +1,8 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { signInWithEmailAndPassword, signOut as firebaseSignOut, onAuthStateChanged, setPersistence, browserSessionPersistence } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
-import { auth, db, setCurrentCenter, getCurrentCenter } from '../services/firebase';
+import { auth, db, setCurrentCenter, getCurrentCenter, setCenterWritable, setViewer } from '../services/firebase';
+import { getCenterAccess } from '../utils/subscriptions';
 import { setSentryUser, clearSentryUser, captureError } from '../services/sentry';
 import { toast } from 'react-toastify';
 
@@ -15,7 +16,14 @@ export const useAuth = () => {
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [userData, setUserData] = useState(null);
+  const [userData, setUserDataState] = useState(null);
+  // Viewer (studentsAPI uchun rol/childIds) SINXRON o'rnatiladi — sahifalarning
+  // useEffect'lari AuthContext'nikidan OLDIN ishlaydi, shuning uchun effektda
+  // o'rnatish kechikardi va birinchi so'rov noto'g'ri rol bilan ketardi.
+  const setUserData = (data) => {
+    setViewer(data);
+    setUserDataState(data);
+  };
   const [centerData, setCenterData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -83,6 +91,7 @@ export const AuthProvider = ({ children }) => {
     if (userDoc.exists()) {
       const data = { id: userDoc.id, ...userDoc.data() };
       role = data.role;
+      setUser(result.user);
       setUserData(data);
 
       // Center set qilish
@@ -117,6 +126,17 @@ export const AuthProvider = ({ children }) => {
   // centerId ni userData dan yoki getCurrentCenter dan olish
   const centerId = userData?.centerId || getCurrentCenter();
 
+  // Obuna holati: active | grace | expired | suspended (utils/subscriptions.js).
+  // expired/suspended — faqat o'qish rejimi (api.js yozishdan oldin tekshiradi,
+  // firestore.rules esa server tomonda bloklaydi). super_admin cheklanmaydi.
+  const centerAccess = useMemo(() => getCenterAccess(centerData), [centerData]);
+  const isSuperAdminUser = userData?.role === 'super_admin';
+  const readOnly = !isSuperAdminUser && (centerAccess.state === 'expired' || centerAccess.state === 'suspended');
+
+  useEffect(() => {
+    setCenterWritable(!readOnly);
+  }, [readOnly]);
+
   const value = {
     user,
     userData,
@@ -128,6 +148,8 @@ export const AuthProvider = ({ children }) => {
     isAuthenticated: !!user,
     role: userData?.role || null,
     centerId,
+    centerAccess,
+    readOnly,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

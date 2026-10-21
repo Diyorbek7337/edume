@@ -3,7 +3,7 @@ import { Search, Plus, Phone, Edit, Trash2, UserPlus, Calendar, XCircle, CheckCi
 import { Card, Button, Input, Select, Badge, Avatar, Modal, Loading, EmptyState, Textarea } from '../components/common';
 import { leadsAPI, groupsAPI, studentsAPI, usersAPI, settingsAPI } from '../services/api';
 import { sendTelegramMessage } from '../services/telegram';
-import { formatPhone, formatDate } from '../utils/helpers';
+import { formatPhone, formatDate, copyToClipboard } from '../utils/helpers';
 import { validateLeadForm, hasErrors } from '../utils/validation';
 import FieldError from '../components/common/FieldError';
 import { ROLES } from '../utils/constants';
@@ -448,17 +448,23 @@ const Leads = () => {
     setSmsResults({ sent, failed: failed - (selected.filter(l => !l.telegramChatId).length), total: selected.length, noChat: selected.filter(l => !l.telegramChatId).length });
   };
 
-  const copyPhoneList = () => {
+  const copyPhoneList = async () => {
     const selected = leads.filter(l => selectedLeadIds.has(l.id));
     const text = selected.map(l => `${l.fullName}: ${l.phone}`).join('\n');
-    navigator.clipboard.writeText(text);
+    if (!await copyToClipboard(text)) {
+      toast.info("Nusxalab bo'lmadi — brauzer ruxsat bermadi");
+      return;
+    }
     toast.success(`${selected.length} ta telefon raqam nusxalandi`);
   };
 
-  const copyAllMessages = () => {
+  const copyAllMessages = async () => {
     const selected = leads.filter(l => selectedLeadIds.has(l.id));
     const text = selected.map(l => `${l.phone}: ${getPersonalizedMessage(l)}`).join('\n\n---\n\n');
-    navigator.clipboard.writeText(text);
+    if (!await copyToClipboard(text)) {
+      toast.info("Nusxalab bo'lmadi — brauzer ruxsat bermadi");
+      return;
+    }
     toast.success("Barcha xabarlar nusxalandi");
   };
 
@@ -1010,8 +1016,11 @@ const Leads = () => {
                       </button>
                       {/* Copy single */}
                       <button
-                        onClick={() => {
-                          navigator.clipboard.writeText(msg);
+                        onClick={async () => {
+                          if (!await copyToClipboard(msg)) {
+                            toast.info("Nusxalab bo'lmadi — brauzer ruxsat bermadi");
+                            return;
+                          }
                           setCopiedPhone(lead.id);
                           setTimeout(() => setCopiedPhone(''), 1500);
                         }}
@@ -1078,9 +1087,12 @@ const Leads = () => {
           )}
           <Button
             className="w-full"
-            onClick={() => {
+            onClick={async () => {
               const text = `O'quvchi:\nLogin: ${createdCredentials?.studentEmail}\nParol: ${createdCredentials?.defaultPassword}\n\nOta-ona:\nLogin: ${createdCredentials?.parentEmail}\nParol: ${createdCredentials?.parentDefaultPassword}`;
-              navigator.clipboard.writeText(text);
+              if (!await copyToClipboard(text)) {
+                toast.info("Nusxalab bo'lmadi — matnni qo'lda belgilab oling");
+                return;
+              }
               toast.success("Nusxalandi!");
             }}
           >

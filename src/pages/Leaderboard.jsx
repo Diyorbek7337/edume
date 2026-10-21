@@ -4,23 +4,21 @@ import {
   Users, Calendar, BookOpen, CheckCircle, Clock, Gift, Flame
 } from 'lucide-react';
 import { Card, Button, Select, Badge, Avatar, Loading } from '../components/common';
-import { 
-  studentsAPI, groupsAPI, gradesAPI, attendanceAPI, homeworkAPI, 
-  quizAPI, teachersAPI 
+import {
+  studentsAPI, gradesAPI, attendanceAPI, homeworkAPI, quizAPI
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { useRoleScopedGroups } from '../hooks/useRoleScopedGroups';
 import { ROLES } from '../utils/constants';
 import { formatDate, toISODateString } from '../utils/helpers';
 
 const Leaderboard = () => {
   const { userData, role } = useAuth();
-  const [loading, setLoading] = useState(true);
-  const [groups, setGroups] = useState([]);
+  const { groups, studentData, loading } = useRoleScopedGroups(role, userData);
   const [students, setStudents] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState('');
   const [leaderboardData, setLeaderboardData] = useState([]);
   const [myStats, setMyStats] = useState(null);
-  const [studentData, setStudentData] = useState(null);
   const [period, setPeriod] = useState('month');
   const [view, setView] = useState('leaderboard');
 
@@ -52,60 +50,15 @@ const Leaderboard = () => {
     { id: 'point_1000', name: '1000 ball', description: '1000 ball to\'plash', icon: Medal, condition: (stats) => stats.totalPoints >= 1000 },
   ];
 
-  useEffect(() => { fetchData(); }, []);
-  useEffect(() => { if (selectedGroup) calculateLeaderboard(); }, [selectedGroup, period]);
+  // Guruhlar useRoleScopedGroups orqali yuklanadi. MUHIM: bu sahifada har doim
+  // BIRINCHI guruh avtomatik tanlanadi (boshqa sahifalarda — faqat aniq bitta
+  // guruh bo'lsagina) — bu ATAYLAB saqlangan farq, Leaderboard'ning original
+  // xatti-harakati.
+  useEffect(() => {
+    if (groups.length > 0) setSelectedGroup(groups[0].id);
+  }, [groups]);
 
-  const fetchData = async () => {
-    try {
-      let groupsData = [];
-      
-      if (role === ROLES.TEACHER) {
-        const allTeachers = await teachersAPI.getAll();
-        const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
-        const teacher = allTeachers.find(t => 
-          t.id === userData?.id || t.email === userData?.email ||
-          normalizePhone(t.phone) === normalizePhone(userData?.phone)
-        );
-        
-        const allGroups = await groupsAPI.getAll();
-        if (teacher) groupsData = allGroups.filter(g => g.teacherId === teacher.id);
-        const groups2 = allGroups.filter(g => g.teacherId === userData?.id);
-        groupsData = [...groupsData, ...groups2].filter((g, i, self) => 
-          i === self.findIndex(t => t.id === g.id)
-        );
-      } else if (isStudentOrParent) {
-        const allStudents = await studentsAPI.getAll();
-        const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
-        
-        let student;
-        if (role === ROLES.PARENT) {
-          student = allStudents.find(s => 
-            s.parentPhone === userData?.phone || 
-            normalizePhone(s.parentPhone) === normalizePhone(userData?.phone)
-          );
-        } else {
-          student = allStudents.find(s => 
-            s.email === userData?.email || 
-            normalizePhone(s.phone) === normalizePhone(userData?.phone)
-          );
-        }
-        
-        if (student) {
-          setStudentData(student);
-          const allGroups = await groupsAPI.getAll();
-          groupsData = allGroups.filter(g => 
-            g.id === student.groupId || g.studentIds?.includes(student.id)
-          );
-        }
-      } else {
-        groupsData = await groupsAPI.getAll();
-      }
-      
-      setGroups(groupsData);
-      if (groupsData.length > 0) setSelectedGroup(groupsData[0].id);
-    } catch (err) { console.error(err); }
-    finally { setLoading(false); }
-  };
+  useEffect(() => { if (selectedGroup) calculateLeaderboard(); }, [selectedGroup, period]);
 
   const calculateLeaderboard = async () => {
     try {
@@ -119,6 +72,17 @@ const Leaderboard = () => {
 
       setStudents(studentsData);
 
+      // MUHIM: uy vazifasi/test natijalarini FAQAT BIR MARTA (guruh darajasida)
+      // olamiz — ilgari bular har TALABA uchun qayta so'ralardi (pastdagi
+      // studentsData.map ichida), ya'ni N talaba × M vazifa/test marta ortiqcha
+      // Firestore o'qish sodir bo'lardi (30 talaba × 10 vazifa = 300+ o'qish).
+      // Natija barcha talabalar uchun bir xil — shuning uchun bir marta olib,
+      // har talaba uchun faqat filtrlash yetarli.
+      const [allHomeworkSubs, allQuizResults] = await Promise.all([
+        Promise.all(homework.map(hw => homeworkAPI.getSubmissions(hw.id))),
+        Promise.all(quizzes.map(q => quizAPI.getResults(q.id))),
+      ]);
+
       const now = new Date();
       const filterByPeriod = (dateValue) => {
         const dateStr = toISODateString(dateValue);
@@ -126,9 +90,10 @@ const Leaderboard = () => {
         const todayStr = now.toISOString().split('T')[0];
         
         switch (period) {
-          case 'week':
+          case 'week': {
             const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
             return dateStr >= weekAgo.toISOString().split('T')[0];
+          }
           case 'month':
             return dateStr.startsWith(todayStr.substring(0, 7));
           default:
@@ -136,7 +101,7 @@ const Leaderboard = () => {
         }
       };
 
-      const leaderboard = await Promise.all(studentsData.map(async (student) => {
+      const leaderboard = studentsData.map((student) => {
         let totalPoints = 0;
 
         // Baholar — yangi tizim: savol-javob va amaliy ish
@@ -182,40 +147,34 @@ const Leaderboard = () => {
         if (streak >= 30) totalPoints += POINT_RULES.attendance_streak_30.points;
         else if (streak >= 7) totalPoints += POINT_RULES.attendance_streak_7.points;
 
-        // Uy vazifalari — parallel fetch
+        // Uy vazifalari — guruh darajasida oldindan olingan natijalardan filtrlash
         let completedHomework = 0;
-        if (homework.length > 0) {
-          const allSubs = await Promise.all(homework.map(hw => homeworkAPI.getSubmissions(hw.id)));
-          homework.forEach((hw, idx) => {
-            const mySub = allSubs[idx].find(s => s.studentId === student.id);
-            if (mySub) {
-              completedHomework++;
-              if (mySub.score !== undefined) {
-                const percent = (mySub.score / hw.maxScore) * 100;
-                if (percent >= 90) totalPoints += POINT_RULES.homework_excellent.points;
-                else totalPoints += POINT_RULES.homework_ontime.points;
-              } else {
-                totalPoints += POINT_RULES.homework_ontime.points;
-              }
+        homework.forEach((hw, idx) => {
+          const mySub = allHomeworkSubs[idx].find(s => s.studentId === student.id);
+          if (mySub) {
+            completedHomework++;
+            if (mySub.score !== undefined) {
+              const percent = (mySub.score / hw.maxScore) * 100;
+              if (percent >= 90) totalPoints += POINT_RULES.homework_excellent.points;
+              else totalPoints += POINT_RULES.homework_ontime.points;
+            } else {
+              totalPoints += POINT_RULES.homework_ontime.points;
             }
-          });
-        }
+          }
+        });
 
-        // Testlar — parallel fetch
+        // Testlar — guruh darajasida oldindan olingan natijalardan filtrlash
         let quizzesPassed = 0;
         let perfectScores = 0;
-        if (quizzes.length > 0) {
-          const allResults = await Promise.all(quizzes.map(q => quizAPI.getResults(q.id)));
-          quizzes.forEach((q, idx) => {
-            const myResult = allResults[idx].find(r => r.studentId === student.id);
-            if (myResult?.passed) {
-              quizzesPassed++;
-              if (myResult.percentage >= 90) totalPoints += POINT_RULES.quiz_excellent.points;
-              else totalPoints += POINT_RULES.quiz_passed.points;
-              if (myResult.percentage === 100) perfectScores++;
-            }
-          });
-        }
+        quizzes.forEach((q, idx) => {
+          const myResult = allQuizResults[idx].find(r => r.studentId === student.id);
+          if (myResult?.passed) {
+            quizzesPassed++;
+            if (myResult.percentage >= 90) totalPoints += POINT_RULES.quiz_excellent.points;
+            else totalPoints += POINT_RULES.quiz_passed.points;
+            if (myResult.percentage === 100) perfectScores++;
+          }
+        });
 
         const stats = {
           totalPoints,
@@ -233,7 +192,7 @@ const Leaderboard = () => {
         };
 
         return { student, totalPoints, stats };
-      }));
+      });
 
       const sortedLeaderboard = leaderboard.sort((a, b) => b.totalPoints - a.totalPoints);
       setLeaderboardData(sortedLeaderboard);

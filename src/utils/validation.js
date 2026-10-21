@@ -61,6 +61,13 @@ export const validateStudentForm = (data) => {
     }
   }
 
+  if (data.courseDurationMonths !== undefined && data.courseDurationMonths !== '') {
+    const cd = Number(data.courseDurationMonths);
+    if (isNaN(cd) || !Number.isInteger(cd) || cd < 1 || cd > 60) {
+      errors.courseDurationMonths = "Kurs davomiyligi 1-60 oy orasida bo'lishi kerak";
+    }
+  }
+
   return errors;
 };
 

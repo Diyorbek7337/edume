@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Search, Plus, Edit, Trash2, GraduationCap, AlertTriangle } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Search, Plus, Edit, Trash2, GraduationCap, AlertTriangle, Info } from 'lucide-react';
 import { Card, Button, Input, Badge, Avatar, Modal, Loading, EmptyState } from '../components/common';
 import { teachersAPI, groupsAPI, usersAPI } from '../services/api';
 import { formatPhone } from '../utils/helpers';
@@ -208,11 +209,24 @@ const Teachers = () => {
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Limit warning */}
-      {limitCheck.limit !== -1 && limitCheck.remaining <= 2 && limitCheck.remaining > 0 && (
+      {centerData?.type !== 'solo' && limitCheck.limit !== -1 && limitCheck.remaining <= 2 && limitCheck.remaining > 0 && (
         <div className="flex items-center gap-3 p-4 border border-yellow-200 rounded-lg bg-yellow-50">
           <AlertTriangle className="w-5 h-5 text-yellow-600" />
           <p className="text-yellow-800">
             <span className="font-medium">Limit yaqinlashmoqda!</span> {limitCheck.remaining} ta o'qituvchi qo'shish mumkin.
+          </p>
+        </div>
+      )}
+
+      {/* Yakka o'qituvchi tarifida faqat 1ta o'qituvchi (o'zi) bo'lishi mumkin —
+          ikkinchi haqiqiy o'qituvchi login yaratish o'rniga cheklangan huquqli
+          "yordamchi" Adminlar bo'limidan qo'shiladi (payments/leads ko'rmaydi). */}
+      {centerData?.type === 'solo' && (
+        <div className="flex items-center gap-3 p-4 border border-blue-200 rounded-lg bg-blue-50">
+          <Info className="w-5 h-5 text-blue-600 shrink-0" />
+          <p className="text-blue-800 text-sm">
+            Yakka o'qituvchi tarifida faqat bitta o'qituvchi (siz) bo'lishi mumkin. Yordamchi kerak bo'lsa,{' '}
+            <Link to="/admins" className="font-medium underline">Adminlar</Link> bo'limidan cheklangan huquqli yordamchi qo'shing.
           </p>
         </div>
       )}
@@ -225,13 +239,15 @@ const Teachers = () => {
             {limitCheck.limit !== -1 && <span className="ml-2 text-sm">(limit: {limitCheck.limit})</span>}
           </p>
         </div>
-        <Button 
-          icon={Plus} 
-          onClick={handleAddClick}
-          disabled={!limitCheck.allowed}
-        >
-          Yangi o'qituvchi
-        </Button>
+        {centerData?.type !== 'solo' && (
+          <Button
+            icon={Plus}
+            onClick={handleAddClick}
+            disabled={!limitCheck.allowed}
+          >
+            Yangi o'qituvchi
+          </Button>
+        )}
       </div>
 
       <Card padding="p-4">

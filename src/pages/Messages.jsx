@@ -131,18 +131,8 @@ const Messages = () => {
           const allTeachers = await teachersAPI.getAll();
           
           // O'quvchini topish
-          let myStudent;
-          if (role === ROLES.PARENT) {
-            myStudent = allStudents.find(s => 
-              s.parentPhone === userData?.phone || 
-              userData?.childId === s.id
-            );
-          } else {
-            myStudent = allStudents.find(s => 
-              s.email === userData?.email || 
-              s.phone === userData?.phone
-            );
-          }
+          // O'z yozuvi: o'quvchi — userId, ota-ona — childIds (studentsAPI to'liq faqat shularni qaytaradi)
+          let myStudent = allStudents.find(s => s.isMine);
           
           if (myStudent && myStudent.groupId) {
             // O'quvchining guruhini topish

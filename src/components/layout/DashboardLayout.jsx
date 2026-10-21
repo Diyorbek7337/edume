@@ -17,6 +17,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { Moon, Sun } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { trialDaysLeft, isTrialExpired } from '../../utils/subscriptions';
+import SubscriptionBanner from '../subscription/SubscriptionBanner';
 
 const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }) => {
   const { userData, role, signOut } = useAuth();
@@ -58,7 +59,9 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
     }
 
     if (role === ROLES.ADMIN) {
-      items.push(
+      const perms = userData?.permissions; // undefined = cheklov yo'q (eski admin)
+      const ok = (id) => !Array.isArray(perms) || perms.includes(id);
+      const adminItems = [
         { id: 'students',        label: n('students'),        icon: Users,         path: '/students' },
         { id: 'teachers',        label: n('teachers'),        icon: GraduationCap, path: '/teachers' },
         { id: 'groups',          label: n('groups'),          icon: UsersRound,    path: '/groups' },
@@ -79,7 +82,8 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
         { id: 'teacher-ratings', label: n('teacherRatings'),  icon: Star,          path: '/teacher-ratings' },
         { id: 'messages',        label: n('messages'),        icon: MessageSquare, path: '/messages', badge: unreadCount },
         { id: 'reports',         label: n('reports'),         icon: BarChart3,     path: '/reports' },
-      );
+      ];
+      items.push(...adminItems.filter(item => ok(item.id)));
     }
 
     if (role === ROLES.TEACHER) {
@@ -176,6 +180,23 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onMobileClose, unreadCount }
 
       {/* Settings & User */}
       <div className="p-3 border-t border-gray-200 dark:border-gray-700">
+        {/* Tarif — faqat Direktor uchun */}
+        {role === ROLES.DIRECTOR && (
+          <NavLink
+            to="/pricing"
+            onClick={onMobileClose}
+            className={({ isActive }) => `
+              flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors mb-2
+              ${isActive ? 'bg-gray-100 text-gray-900' : 'text-gray-600 hover:bg-gray-100'}
+              ${collapsed ? 'justify-center' : ''}
+            `}
+            title={collapsed ? 'Tarif' : undefined}
+          >
+            <CreditCard className="w-5 h-5" />
+            {!collapsed && <span className="font-medium">Tarif</span>}
+          </NavLink>
+        )}
+
         {/* Sozlamalar - faqat Direktor uchun */}
         {role === ROLES.DIRECTOR && (
           <NavLink
@@ -344,7 +365,13 @@ const Header = ({ onMenuClick, unreadCount }) => {
 };
 
 const DashboardLayout = () => {
-  const { userData, role, centerId, centerData } = useAuth();
+  const { userData, role, centerId } = useAuth();
+  // 'messages' moduli endi firestore.rules'da ham tekshiriladi. Bu so'rov har 30
+  // soniyada takrorlanadi — ruxsatsiz adminda u har safar rad etilib, konsolni
+  // xatolarga to'ldirardi, shuning uchun umuman yuborilmaydi.
+  const canSeeMessages = role !== ROLES.ADMIN
+    || !Array.isArray(userData?.permissions)
+    || userData.permissions.includes('messages');
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -359,9 +386,6 @@ const DashboardLayout = () => {
       if (alertDismissed) return;
 
       try {
-        const normalizePhone = (phone) => phone?.replace(/\D/g, '') || '';
-        const userPhone = normalizePhone(userData?.phone);
-        const userEmail = userData?.email?.toLowerCase();
         const childIds = userData?.childIds || (userData?.childId ? [userData.childId] : []);
 
         // O'quvchilarni topish
@@ -372,14 +396,9 @@ const DashboardLayout = () => {
         } else {
           const allStudents = await studentsAPI.getAll();
           if (role === ROLES.PARENT) {
-            myStudents = allStudents.filter(s => {
-              const p = normalizePhone(s.parentPhone);
-              return p === userPhone || childIds.includes(s.id);
-            });
+            myStudents = allStudents.filter(s => s.isMine || childIds.includes(s.id));
           } else {
-            const s = allStudents.find(s =>
-              s.email?.toLowerCase() === userEmail || normalizePhone(s.phone) === userPhone
-            );
+            const s = allStudents.find(st => st.isMine); // o'z yozuvi (studentsAPI: userId)
             if (s) myStudents = [s];
           }
         }
@@ -452,7 +471,7 @@ const DashboardLayout = () => {
   // Xabarlarni tekshirish
   useEffect(() => {
     const checkUnreadMessages = async () => {
-      if (!userData?.id || !centerId) return;
+      if (!userData?.id || !centerId || !canSeeMessages) return;
       
       try {
         const allMessages = await messagesAPI.getAll();
@@ -506,7 +525,7 @@ const DashboardLayout = () => {
     // Har 30 sekundda tekshirish
     const interval = setInterval(checkUnreadMessages, 30000);
     return () => clearInterval(interval);
-  }, [userData, role]);
+  }, [userData, role, centerId, canSeeMessages]);
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 transition-colors">
@@ -567,25 +586,8 @@ const DashboardLayout = () => {
             ⚠️ STAGING MUHITI — Bu yerda qilingan o'zgarishlar test uchun
           </div>
         )}
-        {centerData && isTrialExpired(centerData) && (
-          <div className="mx-4 lg:mx-6 mt-4 p-4 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between gap-4">
-            <div>
-              <p className="font-semibold text-red-800">30 kunlik VIP sinov muddati tugadi</p>
-              <p className="text-sm text-red-600 mt-0.5">
-                Tizimdan foydalanishni davom ettirish uchun tarifni tanlang.
-                Asosiy: 99,000 so'm/oy · Pro: 249,000 so'm/oy
-              </p>
-            </div>
-            <a
-              href="https://t.me/Diyorbek7337"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex-shrink-0 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition"
-            >
-              Tarifni tanlash
-            </a>
-          </div>
-        )}
+        {/* Obuna holati: tugashiga oz qolgani, imtiyoz davri, faqat-o'qish rejimi */}
+        <SubscriptionBanner />
         <main className="p-4 lg:p-6 pb-24">
           <Outlet />
         </main>

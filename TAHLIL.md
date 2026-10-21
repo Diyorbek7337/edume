@@ -46,15 +46,12 @@ Ko'plab o'quv markazlari hali Excel yoki daftar bilan ishlaydi. Professional CRM
 ---
 
 ## Daromad Imkoniyati
-**Juda Yuqori** — O'zbekistonda eng ko'p talab bo'lgan soha:
+**Juda Yuqori** — O'zbekistonda eng ko'p talab bo'lgan soha.
 
-O'zbekistonda 15,000+ xususiy o'quv markazi bor va ular uchun professional tizim kerak.
+Amaldagi tariflar (manba: `src/utils/subscriptions.js`):
+- Sinov: 30 kun bepul (Pro darajasida), keyin 3 kun imtiyoz, so'ng faqat ko'rish rejimi
+- Yakka o'qituvchi (Solo): 100 000 so'm/oy — 150 o'quvchi, 1 o'qituvchi
+- Asosiy (Basic): 99 000 so'm/oy — 100 o'quvchi, 10 o'qituvchi
+- Pro: 199 000 so'm/oy — cheksiz
 
-- Starter: 149,000 so'm/oy (50 talabagacha)
-- Standard: 299,000 so'm/oy (200 talabagacha)
-- Premium: 599,000 so'm/oy (cheksiz)
-
-**Proyeksiya:**
-- 500 markaz × 200,000 so'm = **100,000,000 so'm/oy**
-
-**Bu loyiha eng katta biznes potentsialiga ega loyihalardan biri.**
+**Proyeksiya:** 300 markaz × ~130 000 so'm (o'rtacha) ≈ **39 000 000 so'm/oy**

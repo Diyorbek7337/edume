@@ -37,19 +37,8 @@ const TeacherRatings = () => {
       // O'quvchi/ota-ona uchun o'z guruhidagi o'qituvchilarni topish
       if (isStudentOrParent) {
         const allStudents = await studentsAPI.getAll();
-        let student;
-        
-        if (role === ROLES.PARENT) {
-          student = allStudents.find(s => 
-            s.parentPhone === userData?.phone ||
-            s.parentPhone?.replace(/\D/g, '') === userData?.phone?.replace(/\D/g, '')
-          );
-        } else {
-          student = allStudents.find(s => 
-            s.email === userData?.email ||
-            s.phone?.replace(/\D/g, '') === userData?.phone?.replace(/\D/g, '')
-          );
-        }
+        // O'z yozuvi: o'quvchi — userId, ota-ona — childIds (studentsAPI to'liq faqat shularni qaytaradi)
+        let student = allStudents.find(s => s.isMine);
         
         if (student) {
           // O'quvchi guruhlaridagi o'qituvchilarni topish
