@@ -88,6 +88,12 @@ export const AuthProvider = ({ children }) => {
     }
     const userDoc = await getDoc(doc(db, 'users', result.user.uid));
     let role = null;
+    if (userDoc.exists() && userDoc.data().role === 'device') {
+      // Face ID terminal account: only for the "Davomat" program, never for the web app
+      await firebaseSignOut(auth);
+      sessionStorage.removeItem('loginTime');
+      throw Object.assign(new Error('Bu Face ID qurilmasi akkaunti — u bilan Edume\'ga kirib bo\'lmaydi'), { code: 'auth/device-account' });
+    }
     if (userDoc.exists()) {
       const data = { id: userDoc.id, ...userDoc.data() };
       role = data.role;

@@ -1786,3 +1786,62 @@ export const subscriptionRequestsAPI = {
     return { id, status };
   },
 };
+
+// ==================== FACE ID DEVICES (Hikvision "Davomat" dasturi) ====================
+// A device account (role: 'device') can only read this centre's students / groups / settings and write
+// attendance (see firestore.rules → isDevice). The "Davomat" program on the centre's PC signs in with it.
+const DEVICE_EMAIL_DOMAIN = 'faceid.edume.uz';
+
+const randomPassword = () => {
+  const bytes = new Uint8Array(18);
+  crypto.getRandomValues(bytes);
+  return btoa(String.fromCharCode(...bytes)).replace(/[^A-Za-z0-9]/g, '').slice(0, 20) + 'aA9';
+};
+
+export const faceIdDevicesAPI = {
+  list: async () => {
+    const centerId = getCurrentCenter();
+    if (!centerId) return [];
+    const q = query(collection(db, 'users'), where('centerId', '==', centerId), where('role', '==', 'device'));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+  },
+
+  /** Creates the account and returns the connection code for "Davomat" (shown once). */
+  create: async (centerName = '') => {
+    const centerId = getCurrentCenter();
+    if (!centerId) throw new Error('No center selected');
+    const auth = getSecondaryAuth();
+    const email = `device-${centerId.toLowerCase()}-${Date.now().toString(36)}@${DEVICE_EMAIL_DOMAIN}`;
+    const password = randomPassword();
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      await setDoc(doc(db, 'users', cred.user.uid), {
+        fullName: 'Face ID davomat',
+        email,
+        role: 'device',
+        centerId,
+        createdAt: serverTimestamp(),
+      });
+      await signOut(auth).catch(() => {});
+      const json = JSON.stringify({
+        apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+        projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+        email, password, centerId, centerName,
+      });
+      // UTF-8 safe base64 (centre names may be Cyrillic or contain ʻ)
+      const code = btoa(String.fromCharCode(...new TextEncoder().encode(json)));
+      return { id: cred.user.uid, email, code };
+    } catch (err) {
+      await signOut(auth).catch(() => {});
+      logError('faceIdDevices create error:', err);
+      throw err;
+    }
+  },
+
+  /** Without its users/{uid} document the account has no role -> Firestore refuses everything. */
+  remove: async (uid) => {
+    await deleteDoc(doc(db, 'users', uid));
+    return true;
+  },
+};

@@ -7,6 +7,7 @@ import { toast } from 'react-toastify';
 import { getBotInfo, getUpdates, parseRegistrations, sendTelegramMessage } from '../services/telegram';
 import { useAuth } from '../contexts/AuthContext';
 import { SUBSCRIPTION_PLANS, formatPrice, trialDaysLeft, isTrialExpired } from '../utils/subscriptions';
+import FaceIdDevices from '../components/settings/FaceIdDevices';
 
 const Settings = () => {
   const { centerId, centerData } = useAuth();
@@ -817,6 +818,11 @@ const Settings = () => {
           <Button type="submit" icon={Save} loading={saving}>Saqlash</Button>
         </div>
       </form>
+
+      {/* Face ID — outside the settings form: it saves on its own */}
+      <div className="mt-6">
+        <FaceIdDevices centerName={settings.centerName} />
+      </div>
     </div>
   );
 };
